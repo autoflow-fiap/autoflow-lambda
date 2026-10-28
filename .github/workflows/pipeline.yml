@@ -58,8 +58,7 @@ jobs:
       AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
       TF_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
       TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}
-      AWS_LAMBDA_PACKAGE_BUCKET: ${{ vars.AWS_LAMBDA_PACKAGE_BUCKET }}
-      AWS_LAMBDA_FUNCTION_NAME: ${{ vars.AWS_LAMBDA_FUNCTION_NAME || 'autoflow-cpf-validator-homolog' }}
+      AWS_LAMBDA_FUNCTION_NAME: autoflow-cpf-validator-homolog
       TF_VAR_aws_allowed_account_ids: '["${{ vars.AWS_EXPECTED_ACCOUNT_ID }}"]'
       TF_VAR_region: ${{ vars.AWS_REGION }}
       TF_VAR_environment: homolog
@@ -88,9 +87,7 @@ jobs:
           [[ "$AWS_EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
           test -n "$TF_STATE_BUCKET"
           test "$TF_STATE_KEY" = lambda/terraform.tfstate
-          test -n "$AWS_LAMBDA_PACKAGE_BUCKET"
           test -n "$AWS_LAMBDA_FUNCTION_NAME"
-          test "$AWS_LAMBDA_PACKAGE_BUCKET" = "$TF_STATE_BUCKET"
           test "${{ vars.AWS_INFRA_STATE_KEY }}" = eks/terraform.tfstate
           test "${{ vars.AWS_RDS_STATE_KEY }}" = rds/terraform.tfstate
           test -n "$TF_VAR_role_arn"
@@ -132,9 +129,7 @@ jobs:
       - name: Publicar pacote Lambda imutável no S3
         id: package
         working-directory: infra
-        env:
-          AWS_LAMBDA_PACKAGE_BUCKET: ${{ vars.AWS_LAMBDA_PACKAGE_BUCKET }}
-        run: python ../scripts/lambda_package_s3.py publish --file ../lambda.zip --bucket "$AWS_LAMBDA_PACKAGE_BUCKET" --region "$AWS_REGION" --expected-owner "$AWS_EXPECTED_ACCOUNT_ID" --metadata lambda-package.json --github-output "$GITHUB_OUTPUT"
+        run: python ../scripts/lambda_package_s3.py publish --file ../lambda.zip --bucket "$TF_STATE_BUCKET" --region "$AWS_REGION" --expected-owner "$AWS_EXPECTED_ACCOUNT_ID" --metadata lambda-package.json --github-output "$GITHUB_OUTPUT"
       - name: Gerar plan confidencial
         working-directory: infra
         env:
@@ -182,8 +177,7 @@ jobs:
       AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
       TF_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
       TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}
-      AWS_LAMBDA_PACKAGE_BUCKET: ${{ vars.AWS_LAMBDA_PACKAGE_BUCKET }}
-      AWS_LAMBDA_FUNCTION_NAME: ${{ vars.AWS_LAMBDA_FUNCTION_NAME || 'autoflow-cpf-validator-homolog' }}
+      AWS_LAMBDA_FUNCTION_NAME: autoflow-cpf-validator-homolog
       TF_VAR_aws_allowed_account_ids: '["${{ vars.AWS_EXPECTED_ACCOUNT_ID }}"]'
       TF_VAR_region: ${{ vars.AWS_REGION }}
       TF_VAR_environment: homolog
@@ -219,7 +213,6 @@ jobs:
           [[ "$AWS_EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
           test -n "$TF_STATE_BUCKET"
           test "$TF_STATE_KEY" = lambda/terraform.tfstate
-          test "$AWS_LAMBDA_PACKAGE_BUCKET" = "$TF_STATE_BUCKET"
           test "$TF_VAR_infra_state_key" = eks/terraform.tfstate
           test "$TF_VAR_rds_state_key" = rds/terraform.tfstate
       - uses: aws-actions/configure-aws-credentials@v4
@@ -244,7 +237,7 @@ jobs:
         run: sha256sum --check lambda.zip.sha256
       - name: Validar pacote e versão imutável no S3
         working-directory: infra
-        run: python ../scripts/lambda_package_s3.py verify --file ../lambda.zip --metadata lambda-package.json --bucket "$AWS_LAMBDA_PACKAGE_BUCKET" --region "$AWS_REGION" --expected-owner "$AWS_EXPECTED_ACCOUNT_ID"
+        run: python ../scripts/lambda_package_s3.py verify --file ../lambda.zip --metadata lambda-package.json --bucket "$TF_STATE_BUCKET" --region "$AWS_REGION" --expected-owner "$AWS_EXPECTED_ACCOUNT_ID"
       - name: Confirmar commit de origem do plano
         working-directory: infra
         run: test "$(cat lambda.tfplan.commit)" = "$GITHUB_SHA"

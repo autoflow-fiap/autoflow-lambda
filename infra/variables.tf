@@ -79,7 +79,6 @@ variable "role_arn" {
 variable "terraform_state_bucket" {
   description = "Bucket que contém os states Terraform consumidos pela Lambda."
   type        = string
-  default     = "state-autoflow-terraform"
 }
 
 variable "infra_state_key" {
