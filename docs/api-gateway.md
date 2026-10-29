@@ -1,5 +1,7 @@
 # Integração Lambda com Amazon API Gateway
 
+> Os registros operacionais abaixo são anteriores ao reset do AWS Academy Learner Lab. Eles não comprovam o estado atual; validar novamente somente após recriar a infraestrutura.
+
 O API Gateway HTTP API gerenciado em `autoflow-infra/infra/api-gateway` chama `POST /auth/login` pela integração nativa `AWS_PROXY`, payload `2.0`. A permissão `lambda:InvokeFunction` pertence ao state do API Gateway e é limitada à conta e à rota. Não há integração por Function URL.
 
 ## Homologação observada
