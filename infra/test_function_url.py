@@ -23,9 +23,9 @@ class FunctionUrlConfigurationTest(unittest.TestCase):
     def test_lambda_runtime_and_network_configuration_are_unchanged(self):
         lambda_tf = (ROOT / "lambda.tf").read_text(encoding="utf-8")
         function = lambda_tf.split('resource "aws_lambda_function" "cpf_validator" {', 1)[1].split("\n}", 1)[0]
-        self.assertIn('runtime          = "python3.12"', function)
-        self.assertIn('timeout          = 15', function)
-        self.assertIn('memory_size      = 256', function)
+        self.assertRegex(function, r'(?m)^\s*runtime\s+= "python3\.12"$')
+        self.assertRegex(function, r"(?m)^\s*timeout\s+= 15$")
+        self.assertRegex(function, r"(?m)^\s*memory_size\s+= 256$")
         self.assertIn("vpc_config", function)
         self.assertIn('data.terraform_remote_state.db.outputs.lambda_security_group_id', function)
 

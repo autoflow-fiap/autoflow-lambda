@@ -28,18 +28,28 @@ O API Gateway e a permissão de invocação são mantidos em `autoflow-infra`; e
 
 `infra/lambda.tf` declara a função em subnets privadas, Security Group do RDS, timeout de 15 segundos e memória de 256 MB. A role de execução é fornecida externamente. O ZIP é publicado no bucket S3 configurado sob `lambda-packages/sha256/`, com escrita condicional, versionamento e checksum; o Terraform usa bucket, chave e `VersionId` aprovados no Plan. O prefixo dos pacotes não coincide com as keys dos Terraform States. A identidade e a configuração de runtime da função permanecem gerenciadas pelo mesmo recurso Terraform.
 
-## Pipeline e validação
+## Pipeline e ambientes
 
 Consulte o [catálogo de variables e secrets](docs/variables-and-secrets.md) e o [histórico](docs/variables-changelog.md) para configuração do GitHub Actions, Terraform e runtime.
 
-CI executa em Pull Requests e pushes para `develop` e `main`, com testes Python, auditoria de dependências e validação Terraform. O workflow de `develop` executa Plan/Apply no Environment `homolog`, respeitando os gates definidos. Não há Apply em PR nem CD de produção. Após reset do Learner Lab, reexecute as pipelines CI/CD para provisionar novamente os recursos.
+O workflow usa o mesmo root Terraform para os dois ambientes:
 
-Configure como repository secrets os secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `DATABASE_USERNAME`, `DATABASE_PASSWORD` e `JWT_SECRET`; como repository variables `AWS_REGION`, `AWS_EXPECTED_ACCOUNT_ID`, `AWS_TERRAFORM_STATE_BUCKET`, `AWS_TF_STATE_KEY`, `AWS_INFRA_STATE_KEY`, `AWS_RDS_STATE_KEY` e `AWS_LAMBDA_EXECUTION_ROLE_ARN`; e como Environment variable `homolog`, `TERRAFORM_APPLY_APPROVAL_CONFIGURED=true`. O bucket de pacotes Lambda reutiliza `AWS_TERRAFORM_STATE_BUCKET`. Configure Required reviewers no Environment `homolog`. Os valores esperados estão documentados em [variables-and-secrets.md](docs/variables-and-secrets.md); não copie valores sensíveis para documentação.
+- `develop` seleciona o GitHub Environment `homolog` e mantém a função `autoflow-cpf-validator-homolog`.
+- `main` seleciona o Environment `production` e cria/atualiza `autoflow-cpf-validator-production`.
+- Push em uma dessas branches executa Plan e Apply para o ambiente correspondente; ambos usam o Environment da branch, e os Required reviewers configurados nele são gates obrigatórios. O Apply preserva os guards contra Destroy, Replace e mudança de identidade da Lambda.
+- Pull Requests executam somente CI estático. Push em branches feature não dispara o workflow de deploy, e `workflow_dispatch` só habilita Plan/Apply quando executado em `develop` ou `main`.
+
+Configure os Environments `homolog` e `production`, restringindo deployments respectivamente a `develop` e `main`. Em cada um, cadastre suas próprias Variables e Secrets, habilite Required reviewers e defina `TERRAFORM_APPLY_APPROVAL_CONFIGURED=true` somente depois de confirmar a regra. Os nomes necessários e as chaves de state estão em [variables-and-secrets.md](docs/variables-and-secrets.md). Credenciais AWS temporárias, dados PostgreSQL, JWT Secret e role Lambda são fornecidos externamente; não use valores de um ambiente no outro.
+
+Configure também a proteção da branch `main` com Pull Request obrigatório e checks de CI requeridos antes de promovê-la. A proteção do Environment controla os deployments e não substitui a proteção da branch.
+
+O bucket de pacotes Lambda reutiliza `AWS_TERRAFORM_STATE_BUCKET`, mas o prefixo `lambda-packages/sha256/` é separado das keys dos states. Antes de habilitar o deploy, prepare os states de VPC/EKS e RDS do mesmo ambiente, no bucket pertencente à conta indicada por `AWS_EXPECTED_ACCOUNT_ID`. Na mesma conta, homolog e produção podem compartilhar bucket, mas usam keys diferentes. Em contas diferentes, cada Environment usa seu próprio bucket e states.
 
 ```bash
 # Pré-requisito: Python 3.12
 python -m pip install -r requirements.txt
-python -m unittest discover -s . -p "test_*.py" -v
+python -m unittest test_handler test_http_api -v
+python -m unittest discover -s scripts -p 'test_*.py' -v
 ```
 
 Para criar localmente o pacote de deploy determinístico, use Docker e Bash (por exemplo, Git Bash ou WSL):
@@ -48,7 +58,7 @@ Para criar localmente o pacote de deploy determinístico, use Docker e Bash (por
 bash build.sh
 ```
 
-O pipeline publica o pacote e executa Terraform para homologação. Para solicitar a execução manual, selecione a branch `develop` no workflow `Pipeline` e use `workflow_dispatch`; revise o Plan e o gate do Environment `homolog` antes de qualquer Apply. Após reset do Learner Lab, reexecute as pipelines CI/CD correspondentes para provisionar novamente o ambiente.
+O pipeline publica o pacote e executa Terraform somente para `develop`/`homolog` ou `main`/`production`. Para uma execução manual, selecione uma dessas branches no workflow; o mesmo Environment, preflight de conta e gates de aprovação continuam obrigatórios. Mudanças em PR e branches feature não recebem credenciais AWS e não executam Plan/Apply.
 
 Para validar o Terraform sem acessar o backend remoto:
 
@@ -58,4 +68,4 @@ terraform init -backend=false -input=false
 terraform validate
 ```
 
-O state S3 e os states remotos consumidos devem ser os autorizados para a conta e ambiente esperados. Não aplique planos que incluam alteração de código Lambda durante o fechamento da URL.
+O Terraform valida a conta configurada contra STS, verifica o owner do bucket e consome somente os states remotos definidos para a mesma conta e ambiente. A troca de credenciais/conta ocorre nas configurações externas dos Environments, sem IDs ou ARNs de conta versionados. O fluxo CPF/CNPJ, as validações de status e a emissão JWT permanecem os mesmos; `JWT_SECRET` deve coincidir com `AUTOFLOW_JWT_SECRET` da aplicação dentro de cada ambiente.

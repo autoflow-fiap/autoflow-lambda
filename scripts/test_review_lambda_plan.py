@@ -9,17 +9,48 @@ def change(address, actions, before=None, after=None):
 
 
 class ReviewLambdaPlanTests(unittest.TestCase):
-    def test_manual_dispatch_runs_plan_and_approved_apply_on_develop(self):
+    def test_develop_routes_to_homolog_and_main_routes_to_production(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
-        condition = "github.ref == 'refs/heads/develop' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
+        condition = "(github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
         plan, apply = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0], workflow.split("  apply:", 1)[1]
         self.assertIn(condition, plan)
         self.assertIn(condition, apply)
-        self.assertIn("environment: homolog", apply)
+        for job in (plan, apply):
+            self.assertIn("environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", job)
+            self.assertIn("autoflow-cpf-validator-${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", job)
+            self.assertIn("TF_VAR_environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", job)
+            self.assertIn("required_reviewers", job)
+            self.assertIn("TERRAFORM_APPLY_APPROVAL_CONFIGURED", job)
+        self.assertNotIn("vars.AWS_LAMBDA_FUNCTION_NAME", workflow)
+
+    def test_production_state_is_separate_and_remote_states_are_environment_scoped(self):
+        workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
+        for key in (
+            "production/lambda/terraform.tfstate",
+            "production/eks/terraform.tfstate",
+            "production/rds/terraform.tfstate",
+            "lambda/terraform.tfstate",
+            "eks/terraform.tfstate",
+            "rds/terraform.tfstate",
+        ):
+            self.assertIn(key, workflow)
+        self.assertIn('expected_bucket_owner=$AWS_EXPECTED_ACCOUNT_ID', workflow)
+
+    def test_apply_requires_an_approved_environment_and_is_limited_to_deploy_branches(self):
+        workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
+        apply = workflow.split("  apply:", 1)[1]
         self.assertIn("required_reviewers", apply)
         self.assertIn("TERRAFORM_APPLY_APPROVAL_CONFIGURED", apply)
-        self.assertNotIn("vars.AWS_LAMBDA_FUNCTION_NAME", workflow)
-        self.assertEqual(workflow.count("AWS_LAMBDA_FUNCTION_NAME: autoflow-cpf-validator-homolog"), 2)
+        self.assertIn("environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", apply)
+        self.assertIn("github.event_name == 'push' || github.event_name == 'workflow_dispatch'", apply)
+        self.assertNotIn("pull_request", apply)
+
+    def test_plan_still_reviews_destroy_replacement_and_lambda_identity(self):
+        workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
+        self.assertEqual(workflow.count("python ../scripts/review_lambda_plan.py lambda-plan.json"), 2)
+        from review_lambda_plan import IDENTITY_FIELDS
+
+        self.assertEqual(IDENTITY_FIELDS, ("function_name", "package_type", "handler", "runtime"))
 
     def test_allows_plan_without_changes(self):
         self.assertEqual(review_plan({"resource_changes": []}), [])
