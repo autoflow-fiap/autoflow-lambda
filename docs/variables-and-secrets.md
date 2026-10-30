@@ -17,7 +17,7 @@ Catálogo necessário para o workflow versionado. CI em PR/push roda sem AWS cre
 | Nome | Finalidade | Onde; origem | CI / CD | Exemplo seguro | Consumidor; default/ausência |
 |---|---|---|---|---|---|
 | `AWS_REGION` | Região AWS | Repository variable | Plan e Apply | `us-east-1` | Workflow/provider/backend; validada contra a região esperada. |
-| `AWS_EXPECTED_ACCOUNT_ID` | Conta esperada pelo guard | Repository variable | Plan e Apply | Identificador AWS de 12 dígitos da conta aprovada | Workflow compara com `sts get-caller-identity`. |
+| `AWS_EXPECTED_ACCOUNT_ID` | Conta esperada pelo guard | Repository variable | Plan e Apply | Identificador AWS de 12 dígitos fornecido externamente | Workflow compara com `sts get-caller-identity` e deriva a allowlist do backend e dos states remotos. |
 | `AWS_TERRAFORM_STATE_BUCKET` | Bucket de states Terraform | Repository variable | Plan e Apply | Nome exclusivo configurado para a conta/região | Workflow/backend; bootstrap separado e explicitamente aprovado quando ausente. |
 | `AWS_TF_STATE_KEY` | Key state próprio Lambda | Repository variable | Plan e Apply | `lambda/terraform.tfstate` | Backend do workflow; validada e preservada. |
 | `AWS_INFRA_STATE_KEY`, `AWS_RDS_STATE_KEY` | Keys remotas EKS e RDS | Repository variables | Plan e Apply | `eks/terraform.tfstate`; `rds/terraform.tfstate` | Workflow valida objetos e Terraform lê data sources; preservadas. |

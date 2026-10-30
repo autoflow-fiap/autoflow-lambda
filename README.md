@@ -50,12 +50,28 @@ bash build.sh
 
 O pipeline publica o pacote e executa Terraform para homologação. Para solicitar a execução manual, selecione a branch `develop` no workflow `Pipeline` e use `workflow_dispatch`; revise o Plan e o gate do Environment `homolog` antes de qualquer Apply. Após reset do Learner Lab, reexecute as pipelines CI/CD correspondentes para provisionar novamente o ambiente.
 
-Para validar o Terraform sem acessar o backend remoto:
+`AWS_EXPECTED_ACCOUNT_ID`, fornecido pelas variables externas do ambiente, é transformado em
+`TF_VAR_aws_allowed_account_ids` e restringe o backend S3 e os dois `terraform_remote_state` (VPC/EKS e RDS). O `init`
+remoto mantém `encrypt=true` e `use_lockfile=true`; as verificações STS e de existência dos states precedem
+Plan/Apply. Para uma inicialização remota autorizada, use a conta e as keys configuradas externamente:
+
+```bash
+terraform -chdir=infra init -input=false -reconfigure \
+  -backend-config="bucket=$AWS_TERRAFORM_STATE_BUCKET" \
+  -backend-config="key=$AWS_TF_STATE_KEY" \
+  -backend-config="region=$AWS_REGION" \
+  -backend-config="allowed_account_ids=$TF_VAR_aws_allowed_account_ids" \
+  -backend-config="encrypt=true" \
+  -backend-config="use_lockfile=true"
+```
+
+Para validar o Terraform sem inicializar o backend remoto:
 
 ```bash
 cd infra
 terraform init -backend=false -input=false
 terraform validate
+python -m unittest discover -s scripts -p 'test_terraform_backend_config.py' -v
 ```
 
 O state S3 e os states remotos consumidos devem ser os autorizados para a conta e ambiente esperados. Não aplique planos que incluam alteração de código Lambda durante o fechamento da URL.
