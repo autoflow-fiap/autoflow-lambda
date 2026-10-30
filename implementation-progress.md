@@ -8,7 +8,7 @@ Referência: seção `autoflow-lambda` de `AutoFlow_Fase3_Plano_Producao_Dedicat
 | L2 | Preservar os guards contra Destroy/Replace e bloquear deploy em PR/feature | `VERIFIED` | `.github/workflows/pipeline.yml`, `scripts/test_review_lambda_plan.py`, `scripts/test_pipeline_resource_discovery.py` | Testes de scripts aprovados; Plan/Apply limitados a `develop`/`main`, com Required reviewers. |
 | L3 | Documentar ambientes, States, credenciais e JWT | `VERIFIED` | `README.md`, `docs/variables-and-secrets.md` | Documentação revisada em pt-BR; nenhum valor secreto, ID ou ARN de conta incluído. |
 | L4 | Verificar autenticação, pacote e configuração Terraform sem AWS | `VERIFIED` | `test_handler.py`, `test_http_api.py`, `infra/test_function_url.py`, `infra/` | 19 testes da Lambda, 33 testes de scripts, 4 testes de configuração, `build.sh`, `pip-audit`, `terraform fmt -check`, `terraform validate` e `actionlint` aprovados. |
-| L5 | Revisar diff/segredos, commitar, publicar branch e abrir PR | `IN_PROGRESS` | Worktree `feat/production-dedicated` | Próximo: inspeção final, commits convencionais, push e PR para `develop`; nenhum merge ou deploy. |
+| L5 | Revisar diff/segredos, commitar, publicar branch e abrir PR | `IMPLEMENTED` | Worktree `feat/production-dedicated` | Commit `38c4d79` publicado; PR #28 aberto para `develop`: https://github.com/autoflow-fiap/autoflow-lambda/pull/28. CI remoto está em andamento; nenhum merge ou deploy. |
 
 ## Configuração externa pendente
 
