@@ -62,12 +62,28 @@ bash build.sh
 
 O pipeline publica o pacote e executa Terraform somente para `develop`/`homolog` ou `main` protegida/`production`. O Plan é criptografado antes de ser publicado como artifact por um dia; o Apply aprovado confere integridade, run, commit e fingerprint antes de descriptografá-lo. Para uma execução manual, selecione uma dessas branches no workflow; o mesmo Environment, preflight de conta e gates de aprovação continuam obrigatórios. Mudanças em PR e branches feature não recebem credenciais AWS e não executam Plan/Apply.
 
-Para validar o Terraform sem acessar o backend remoto:
+`AWS_EXPECTED_ACCOUNT_ID`, fornecido pelas variables externas do ambiente, é transformado em
+`TF_VAR_aws_allowed_account_ids` e restringe o backend S3 e os dois `terraform_remote_state` (VPC/EKS e RDS). O `init`
+remoto mantém `encrypt=true` e `use_lockfile=true`; as verificações STS e de existência dos states precedem
+Plan/Apply. Para uma inicialização remota autorizada, use a conta e as keys configuradas externamente:
+
+```bash
+terraform -chdir=infra init -input=false -reconfigure \
+  -backend-config="bucket=$AWS_TERRAFORM_STATE_BUCKET" \
+  -backend-config="key=$AWS_TF_STATE_KEY" \
+  -backend-config="region=$AWS_REGION" \
+  -backend-config="allowed_account_ids=$TF_VAR_aws_allowed_account_ids" \
+  -backend-config="encrypt=true" \
+  -backend-config="use_lockfile=true"
+```
+
+Para validar o Terraform sem inicializar o backend remoto:
 
 ```bash
 cd infra
 terraform init -backend=false -input=false
 terraform validate
+python -m unittest discover -s scripts -p 'test_terraform_backend_config.py' -v
 ```
 
 O Terraform valida a conta configurada contra STS, verifica o owner do bucket e consome somente os states remotos definidos para a mesma conta e ambiente. Plan e Apply validam o prefixo, unicidade e fingerprint das keys selecionadas. Não aponte uma key nova vazia para um root existente sem reconciliação ou migração controlada; o estado local deste repositório não comprova a localização atual dos States remotos. A troca de credenciais/conta ocorre nas configurações externas dos Environments, sem IDs ou ARNs de conta versionados. O fluxo CPF/CNPJ, as validações de status e a emissão JWT permanecem os mesmos; `JWT_SECRET` deve coincidir com `AUTOFLOW_JWT_SECRET` da aplicação dentro de cada ambiente.

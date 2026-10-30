@@ -25,6 +25,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.16.5"
+          terraform_wrapper: false
       - name: Instalar dependências
         run: python -m pip install -r requirements.txt
       - name: Testes Python e guards
@@ -37,10 +41,6 @@ jobs:
           pip-audit -r requirements.txt
       - name: Validar pacote Lambda
         run: bash ./build.sh
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.16.5"
-          terraform_wrapper: false
       - name: Terraform fmt
         run: terraform fmt -check -recursive infra
       - name: Terraform init sem backend
@@ -137,7 +137,7 @@ jobs:
         run: |
           python scripts/state_resource_guard.py --bucket "$AWS_TERRAFORM_STATE_BUCKET" --key "$AWS_TF_STATE_KEY" -- aws lambda get-function --function-name "$AWS_LAMBDA_FUNCTION_NAME" --query Configuration.FunctionName --output text
           cd infra
-          terraform init -input=false -reconfigure -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="key=$TF_STATE_KEY" -backend-config="region=$AWS_REGION" -backend-config="expected_bucket_owner=$AWS_EXPECTED_ACCOUNT_ID" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+          terraform init -input=false -reconfigure -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="key=$TF_STATE_KEY" -backend-config="region=$AWS_REGION" -backend-config="allowed_account_ids=$TF_VAR_aws_allowed_account_ids" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
       - name: Terraform validate
         working-directory: infra
         run: terraform validate
@@ -349,7 +349,7 @@ jobs:
           terraform_wrapper: false
       - name: Inicializar state remoto existente
         working-directory: infra
-        run: terraform init -input=false -reconfigure -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="key=$TF_STATE_KEY" -backend-config="region=$AWS_REGION" -backend-config="expected_bucket_owner=$AWS_EXPECTED_ACCOUNT_ID" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+        run: terraform init -input=false -reconfigure -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="key=$TF_STATE_KEY" -backend-config="region=$AWS_REGION" -backend-config="allowed_account_ids=$TF_VAR_aws_allowed_account_ids" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
       - name: Revalidar identidade e guard do plano
         working-directory: infra
         run: |

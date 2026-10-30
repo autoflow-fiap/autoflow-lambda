@@ -72,7 +72,7 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
             self.assertIn("python scripts/validate_lambda_state_keys.py", job)
             self.assertIn("python scripts/verify_aws_account.py", job)
             self.assertIn("--expected-bucket-owner \"$AWS_EXPECTED_ACCOUNT_ID\"", job)
-            self.assertIn('expected_bucket_owner=$AWS_EXPECTED_ACCOUNT_ID', job)
+            self.assertIn('backend-config="allowed_account_ids=$TF_VAR_aws_allowed_account_ids"', job)
             self.assertLess(job.index('[[ "$AWS_EXPECTED_ACCOUNT_ID"'), job.index("aws-actions/configure-aws-credentials"))
             self.assertLess(job.index("python scripts/validate_lambda_state_keys.py"), job.index("aws-actions/configure-aws-credentials"))
             self.assertLess(job.index("python scripts/verify_aws_account.py"), job.index("aws ec2 describe-availability-zones"))

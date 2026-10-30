@@ -44,7 +44,8 @@ class ReviewLambdaPlanTests(unittest.TestCase):
             apply.index("CURRENT_DEPLOYMENT_CONFIG="),
             apply.index("aws-actions/configure-aws-credentials"),
         )
-        self.assertIn('expected_bucket_owner=$AWS_EXPECTED_ACCOUNT_ID', workflow)
+        self.assertIn('backend-config="allowed_account_ids=$TF_VAR_aws_allowed_account_ids"', workflow)
+        self.assertIn('--expected-bucket-owner "$AWS_EXPECTED_ACCOUNT_ID"', workflow)
         self.assertNotIn("terraform.tfstate", workflow)
 
     def test_apply_requires_an_approved_environment_and_is_limited_to_deploy_branches(self):

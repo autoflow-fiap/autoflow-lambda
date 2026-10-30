@@ -44,7 +44,7 @@ As keys são valores externos do GitHub Environment, não caminhos fixados no wo
 
 O nome do root não determina o sufixo da key nesta documentação; confirme o valor autoritativo em cada Environment e mantenha exatamente o mesmo valor nas referências remotas. A configuração atual do Terraform da Lambda usa um único `AWS_TERRAFORM_STATE_BUCKET` para seu backend e para `terraform_remote_state`, portanto esse bucket precisa conter as keys de VPC/EKS e RDS do mesmo Environment e pertencer à conta esperada.
 
-Os backends S3 recebem `expected_bucket_owner`. O data source embutido `terraform_remote_state` no Terraform 1.16.5 rejeita esse argumento; antes do init, o workflow verifica as keys remotas VPC/EKS e RDS com `head-object --expected-bucket-owner` na conta do Environment.
+O backend S3 e os data sources `terraform_remote_state` usam `allowed_account_ids`, derivados de `AWS_EXPECTED_ACCOUNT_ID` fornecido pelo Environment. As chamadas AWS CLI mantêm `--expected-bucket-owner`; antes do init, o workflow verifica as keys remotas VPC/EKS e RDS com `head-object --expected-bucket-owner` na conta do Environment. Esse argumento de ownership não é passado à configuração Terraform.
 
 ### Risco de mudança de key e migração
 
