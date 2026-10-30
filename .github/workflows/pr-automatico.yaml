@@ -4,6 +4,8 @@ on:
   push:
     branches-ignore:
       - develop
+      - main
+      - feat/production-dedicated
 
 permissions:
   contents: write
