@@ -31,6 +31,12 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
         self.assertNotIn("AWS_LAMBDA_PACKAGE_BUCKET", workflow)
         self.assertIn('--bucket "$TF_STATE_BUCKET"', workflow)
 
+    def test_manual_cutover_requires_environment_keys_instead_of_defaulting_paths(self):
+        script = (ROOT / "scripts/plan_gateway_cutover.py").read_text(encoding="utf-8")
+        self.assertIn('parser.add_argument("--infra-state-key", required=True)', script)
+        self.assertIn('parser.add_argument("--rds-state-key", required=True)', script)
+        self.assertLess(script.index("validate_state_keys("), script.index('query("sts", "get-caller-identity")'))
+
     def test_jobs_bind_github_environment_for_credentials_variables_and_secrets(self):
         workflow = (ROOT / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
         environment = "environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}"
@@ -39,6 +45,7 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
         apply = workflow.split("  apply:", 1)[1]
         for job in (plan, apply):
             self.assertIn(environment, job)
+            self.assertIn("GITHUB_DEPLOYMENT_ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", job)
             for value in (
                 "vars.AWS_EXPECTED_ACCOUNT_ID",
                 "vars.AWS_TERRAFORM_STATE_BUCKET",
@@ -62,27 +69,45 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
         for job in (plan, apply):
             self.assertIn('[[ "$AWS_EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]', job)
             self.assertIn('^arn:aws:iam::${AWS_EXPECTED_ACCOUNT_ID}:role/.+', job)
+            self.assertIn("python scripts/validate_lambda_state_keys.py", job)
             self.assertIn("python scripts/verify_aws_account.py", job)
             self.assertIn("--expected-bucket-owner \"$AWS_EXPECTED_ACCOUNT_ID\"", job)
             self.assertIn('expected_bucket_owner=$AWS_EXPECTED_ACCOUNT_ID', job)
             self.assertLess(job.index('[[ "$AWS_EXPECTED_ACCOUNT_ID"'), job.index("aws-actions/configure-aws-credentials"))
+            self.assertLess(job.index("python scripts/validate_lambda_state_keys.py"), job.index("aws-actions/configure-aws-credentials"))
             self.assertLess(job.index("python scripts/verify_aws_account.py"), job.index("aws ec2 describe-availability-zones"))
 
-    def test_production_and_homolog_states_and_resources_are_distinct(self):
+    def test_state_keys_are_external_environment_prefixed_unique_and_fingerprinted(self):
         workflow = (ROOT / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
-        for key in (
-            "production/lambda/terraform.tfstate",
-            "production/eks/terraform.tfstate",
-            "production/rds/terraform.tfstate",
-            "lambda/terraform.tfstate",
-            "eks/terraform.tfstate",
-            "rds/terraform.tfstate",
-        ):
-            self.assertIn(key, workflow)
-        self.assertIn("'production' || 'homolog'", workflow)
-        self.assertIn("TF_VAR_environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", workflow)
+        variables = (ROOT / "infra/variables.tf").read_text(encoding="utf-8")
+        plan = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0]
+        apply = workflow.split("  apply:", 1)[1]
+        for job in (plan, apply):
+            self.assertIn("TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}", job)
+            self.assertIn("TF_VAR_infra_state_key: ${{ vars.AWS_INFRA_STATE_KEY }}", job)
+            self.assertIn("TF_VAR_rds_state_key: ${{ vars.AWS_RDS_STATE_KEY }}", job)
+            self.assertIn("python scripts/validate_lambda_state_keys.py", job)
+        self.assertEqual(workflow.count("lambda-deployment-config.sha256"), 3)
+        self.assertNotIn("terraform.tfstate", workflow)
+        self.assertNotIn("terraform.tfstate", (ROOT / "scripts/plan_gateway_cutover.py").read_text(encoding="utf-8"))
+        for variable in ("infra_state_key", "rds_state_key"):
+            declaration = variables.split(f'variable "{variable}"', 1)[1].split("\n}", 1)[0]
+            self.assertNotIn("default", declaration)
         data_tf = (ROOT / "infra/data.tf").read_text(encoding="utf-8")
         self.assertEqual(data_tf.count("expected_bucket_owner = var.aws_allowed_account_ids[0]"), 2)
+
+    def test_documented_remote_keys_match_the_owning_roots(self):
+        documentation = (ROOT / "docs/variables-and-secrets.md").read_text(encoding="utf-8")
+        for relationship in (
+            "`AWS_TF_STATE_KEY_INFRA`",
+            "`AWS_INFRA_STATE_KEY`",
+            "`AWS_TF_STATE_KEY`",
+            "`AWS_RDS_STATE_KEY`",
+            "`homolog/`",
+            "`production/`",
+        ):
+            self.assertIn(relationship, documentation)
+        self.assertIn("Não habilite o CD até confirmar", documentation)
 
     def test_feature_and_pull_request_events_cannot_run_aws_plan_or_apply(self):
         workflow = (ROOT / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")

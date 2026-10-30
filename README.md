@@ -45,6 +45,8 @@ Configure também a proteção da branch `main` com Pull Request obrigatório e 
 
 O bucket de pacotes Lambda reutiliza `AWS_TERRAFORM_STATE_BUCKET`, mas o prefixo `lambda-packages/sha256/` é separado das keys dos states. Antes de habilitar o deploy, prepare os states de VPC/EKS e RDS do mesmo ambiente, no bucket pertencente à conta indicada por `AWS_EXPECTED_ACCOUNT_ID`. Na mesma conta, homolog e produção podem compartilhar bucket, mas usam keys diferentes. Em contas diferentes, cada Environment usa seu próprio bucket e states.
 
+As keys de Terraform State vêm das Variables de cada Environment: devem iniciar pelo nome do Environment e ser distintas entre os roots no mesmo bucket. As relações exatas entre a key de VPC/EKS, RDS, Lambda e aplicação estão em [variables-and-secrets.md](docs/variables-and-secrets.md); os sufixos não são fixados pelo código.
+
 ```bash
 # Pré-requisito: Python 3.12
 python -m pip install -r requirements.txt
@@ -68,4 +70,4 @@ terraform init -backend=false -input=false
 terraform validate
 ```
 
-O Terraform valida a conta configurada contra STS, verifica o owner do bucket e consome somente os states remotos definidos para a mesma conta e ambiente. A troca de credenciais/conta ocorre nas configurações externas dos Environments, sem IDs ou ARNs de conta versionados. O fluxo CPF/CNPJ, as validações de status e a emissão JWT permanecem os mesmos; `JWT_SECRET` deve coincidir com `AUTOFLOW_JWT_SECRET` da aplicação dentro de cada ambiente.
+O Terraform valida a conta configurada contra STS, verifica o owner do bucket e consome somente os states remotos definidos para a mesma conta e ambiente. Plan e Apply validam o prefixo, unicidade e fingerprint das keys selecionadas. Não aponte uma key nova vazia para um root existente sem reconciliação ou migração controlada; o estado local deste repositório não comprova a localização atual dos States remotos. A troca de credenciais/conta ocorre nas configurações externas dos Environments, sem IDs ou ARNs de conta versionados. O fluxo CPF/CNPJ, as validações de status e a emissão JWT permanecem os mesmos; `JWT_SECRET` deve coincidir com `AUTOFLOW_JWT_SECRET` da aplicação dentro de cada ambiente.

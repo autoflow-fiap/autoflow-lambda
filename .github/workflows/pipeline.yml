@@ -52,9 +52,12 @@ jobs:
     name: Terraform Plan ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
     if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: checks
+    outputs:
+      deployment_config_fingerprint: ${{ steps.deployment_config.outputs.fingerprint }}
     runs-on: ubuntu-latest
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
     env:
+      GITHUB_DEPLOYMENT_ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
       TF_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
@@ -88,19 +91,12 @@ jobs:
           [[ "$AWS_EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
           test "$AWS_REGION" = us-east-1
           test -n "$TF_STATE_BUCKET"
+          test "$GITHUB_DEPLOYMENT_ENVIRONMENT" = "$TF_VAR_environment"
           [[ "$TF_VAR_role_arn" =~ ^arn:aws:iam::${AWS_EXPECTED_ACCOUNT_ID}:role/.+ ]]
           test "$AWS_LAMBDA_FUNCTION_NAME" = "autoflow-cpf-validator-$TF_VAR_environment"
           test "$TF_VAR_terraform_state_bucket" = "$TF_STATE_BUCKET"
+          python scripts/validate_lambda_state_keys.py
           test "$APPROVAL_CONFIGURED" = true
-          if [[ "$TF_VAR_environment" == production ]]; then
-            test "$TF_STATE_KEY" = production/lambda/terraform.tfstate
-            test "$TF_VAR_infra_state_key" = production/eks/terraform.tfstate
-            test "$TF_VAR_rds_state_key" = production/rds/terraform.tfstate
-          else
-            test "$TF_STATE_KEY" = lambda/terraform.tfstate
-            test "$TF_VAR_infra_state_key" = eks/terraform.tfstate
-            test "$TF_VAR_rds_state_key" = rds/terraform.tfstate
-          fi
           REVIEWERS=$(gh api "repos/$GITHUB_REPOSITORY/environments/$TF_VAR_environment" --jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length')
           test "$REVIEWERS" -gt 0 || { echo "Plan bloqueado: configure Required reviewers no Environment $TF_VAR_environment." >&2; exit 1; }
       - uses: aws-actions/configure-aws-credentials@v4
@@ -154,6 +150,23 @@ jobs:
         run: |
           terraform show -json lambda.tfplan > lambda-plan.json
           python ../scripts/review_lambda_plan.py lambda-plan.json
+      - name: Fingerprint do Environment e dos States selecionados
+        id: deployment_config
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          FINGERPRINT=$(printf '%s\0' \
+            "$GITHUB_DEPLOYMENT_ENVIRONMENT" \
+            "$AWS_EXPECTED_ACCOUNT_ID" \
+            "$AWS_REGION" \
+            "$TF_STATE_BUCKET" \
+            "$TF_STATE_KEY" \
+            "$TF_VAR_infra_state_key" \
+            "$TF_VAR_rds_state_key" \
+            "$AWS_LAMBDA_FUNCTION_NAME" \
+            "$TF_VAR_role_arn" | sha256sum | cut -d ' ' -f 1)
+          printf '%s\n' "$FINGERPRINT" > lambda-deployment-config.sha256
+          printf 'fingerprint=%s\n' "$FINGERPRINT" >> "$GITHUB_OUTPUT"
       - name: Calcular SHA-256 do plano
         working-directory: infra
         run: |
@@ -169,6 +182,7 @@ jobs:
             infra/lambda.tfplan
             infra/lambda.tfplan.sha256
             infra/lambda.tfplan.commit
+            infra/lambda-deployment-config.sha256
             infra/lambda-package.json
             lambda.zip
             lambda.zip.sha256
@@ -184,6 +198,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
     env:
+      PLAN_DEPLOYMENT_CONFIG_FINGERPRINT: ${{ needs.plan.outputs.deployment_config_fingerprint }}
+      GITHUB_DEPLOYMENT_ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
       TF_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
@@ -223,17 +239,25 @@ jobs:
           test "$AWS_REGION" = us-east-1
           [[ "$AWS_EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
           test -n "$TF_STATE_BUCKET"
+          test "$GITHUB_DEPLOYMENT_ENVIRONMENT" = "$TF_VAR_environment"
           test "$AWS_LAMBDA_FUNCTION_NAME" = "autoflow-cpf-validator-$TF_VAR_environment"
           test "$TF_VAR_terraform_state_bucket" = "$TF_STATE_BUCKET"
-          if [[ "$TF_VAR_environment" == production ]]; then
-            test "$TF_STATE_KEY" = production/lambda/terraform.tfstate
-            test "$TF_VAR_infra_state_key" = production/eks/terraform.tfstate
-            test "$TF_VAR_rds_state_key" = production/rds/terraform.tfstate
-          else
-            test "$TF_STATE_KEY" = lambda/terraform.tfstate
-            test "$TF_VAR_infra_state_key" = eks/terraform.tfstate
-            test "$TF_VAR_rds_state_key" = rds/terraform.tfstate
-          fi
+          python scripts/validate_lambda_state_keys.py
+          CURRENT_DEPLOYMENT_CONFIG=$(printf '%s\0' \
+            "$GITHUB_DEPLOYMENT_ENVIRONMENT" \
+            "$AWS_EXPECTED_ACCOUNT_ID" \
+            "$AWS_REGION" \
+            "$TF_STATE_BUCKET" \
+            "$TF_STATE_KEY" \
+            "$TF_VAR_infra_state_key" \
+            "$TF_VAR_rds_state_key" \
+            "$AWS_LAMBDA_FUNCTION_NAME" \
+            "$TF_VAR_role_arn" | sha256sum | cut -d ' ' -f 1)
+          test -n "$PLAN_DEPLOYMENT_CONFIG_FINGERPRINT"
+          test "$CURRENT_DEPLOYMENT_CONFIG" = "$PLAN_DEPLOYMENT_CONFIG_FINGERPRINT" || {
+            echo "Environment, conta, bucket, keys ou role divergentes do Plan; Apply bloqueado." >&2
+            exit 1
+          }
           [[ "$TF_VAR_role_arn" =~ ^arn:aws:iam::${AWS_EXPECTED_ACCOUNT_ID}:role/.+ ]]
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -264,6 +288,24 @@ jobs:
       - name: Verificar integridade SHA-256
         working-directory: infra
         run: sha256sum --check lambda.tfplan.sha256
+      - name: Revalidar fingerprint do Environment e dos States
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          CURRENT_DEPLOYMENT_CONFIG=$(printf '%s\0' \
+            "$GITHUB_DEPLOYMENT_ENVIRONMENT" \
+            "$AWS_EXPECTED_ACCOUNT_ID" \
+            "$AWS_REGION" \
+            "$TF_STATE_BUCKET" \
+            "$TF_STATE_KEY" \
+            "$TF_VAR_infra_state_key" \
+            "$TF_VAR_rds_state_key" \
+            "$AWS_LAMBDA_FUNCTION_NAME" \
+            "$TF_VAR_role_arn" | sha256sum | cut -d ' ' -f 1)
+          test "$CURRENT_DEPLOYMENT_CONFIG" = "$(cat lambda-deployment-config.sha256)" || {
+            echo "Environment, conta, bucket, key de State ou role divergente do Plan; Apply bloqueado." >&2
+            exit 1
+          }
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.16.5"

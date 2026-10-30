@@ -23,18 +23,29 @@ class ReviewLambdaPlanTests(unittest.TestCase):
             self.assertIn("TERRAFORM_APPLY_APPROVAL_CONFIGURED", job)
         self.assertNotIn("vars.AWS_LAMBDA_FUNCTION_NAME", workflow)
 
-    def test_production_state_is_separate_and_remote_states_are_environment_scoped(self):
+    def test_state_keys_are_validated_and_fingerprint_is_rechecked_before_apply(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
-        for key in (
-            "production/lambda/terraform.tfstate",
-            "production/eks/terraform.tfstate",
-            "production/rds/terraform.tfstate",
-            "lambda/terraform.tfstate",
-            "eks/terraform.tfstate",
-            "rds/terraform.tfstate",
-        ):
-            self.assertIn(key, workflow)
+        plan = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0]
+        apply = workflow.split("  apply:", 1)[1]
+        self.assertIn("GITHUB_DEPLOYMENT_ENVIRONMENT", plan)
+        self.assertIn("GITHUB_DEPLOYMENT_ENVIRONMENT", apply)
+        self.assertIn("deployment_config_fingerprint: ${{ steps.deployment_config.outputs.fingerprint }}", plan)
+        self.assertIn("PLAN_DEPLOYMENT_CONFIG_FINGERPRINT: ${{ needs.plan.outputs.deployment_config_fingerprint }}", apply)
+        self.assertIn("python scripts/validate_lambda_state_keys.py", plan)
+        self.assertIn("python scripts/validate_lambda_state_keys.py", apply)
+        self.assertIn("Fingerprint do Environment e dos States selecionados", plan)
+        self.assertIn("Revalidar fingerprint do Environment e dos States", apply)
+        self.assertIn("lambda-deployment-config.sha256", workflow)
+        self.assertLess(
+            apply.index("Revalidar fingerprint do Environment e dos States"),
+            apply.index("terraform init -input=false -reconfigure"),
+        )
+        self.assertLess(
+            apply.index("CURRENT_DEPLOYMENT_CONFIG="),
+            apply.index("aws-actions/configure-aws-credentials"),
+        )
         self.assertIn('expected_bucket_owner=$AWS_EXPECTED_ACCOUNT_ID', workflow)
+        self.assertNotIn("terraform.tfstate", workflow)
 
     def test_apply_requires_an_approved_environment_and_is_limited_to_deploy_branches(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
