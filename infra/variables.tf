@@ -84,13 +84,11 @@ variable "terraform_state_bucket" {
 variable "infra_state_key" {
   description = "Key do state de VPC/EKS consumido pela Lambda."
   type        = string
-  default     = "infra/terraform.tfstate"
 }
 
 variable "rds_state_key" {
   description = "Key do state RDS consumido pela Lambda."
   type        = string
-  default     = "rds/terraform.tfstate"
 }
 
 variable "lambda_package_bucket" {

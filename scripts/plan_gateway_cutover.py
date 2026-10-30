@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import subprocess
 
+from validate_lambda_state_keys import validate_state_keys
+
 
 def query(*args):
     result = subprocess.run(["aws", *args, "--output", "json"], capture_output=True, text=True)
@@ -25,9 +27,10 @@ def main():
     parser.add_argument("--bucket", required=True)
     parser.add_argument("--function", required=True)
     parser.add_argument("--region", default="us-east-1")
-    parser.add_argument("--infra-state-key", default="eks/terraform.tfstate")
-    parser.add_argument("--rds-state-key", default="rds/terraform.tfstate")
+    parser.add_argument("--infra-state-key", required=True)
+    parser.add_argument("--rds-state-key", required=True)
     args = parser.parse_args()
+    validate_state_keys("homolog", (args.infra_state_key, args.rds_state_key))
     if query("sts", "get-caller-identity")["Account"] != args.account:
         raise RuntimeError("Conta AWS diferente da aprovada")
     configuration = query("lambda", "get-function-configuration", "--function-name", args.function, "--region", args.region)
