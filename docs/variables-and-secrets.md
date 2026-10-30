@@ -2,9 +2,9 @@
 
 Configure GitHub Environments separados chamados `homolog` e `production`, restritos respectivamente às branches `develop` e `main`. Plan e Apply são associados ao Environment selecionado pela branch, portanto recebem apenas suas credenciais, Variables e Secrets. Required reviewers são obrigatórios nos dois Environments e `TERRAFORM_APPLY_APPROVAL_CONFIGURED` deve ser `true` somente após confirmar a regra de aprovação.
 
-Antes de promover para `main`, configure também branch protection com Pull Request obrigatório e checks de CI requeridos. As regras do Environment protegem o deployment, mas não substituem a proteção da branch.
+Antes de promover para `main`, configure também branch protection com Pull Request obrigatório e checks de CI requeridos. Os jobs de Plan e Apply de produção exigem `github.ref_protected`; as regras do Environment protegem o deployment, mas não substituem a proteção da branch. Essa proteção externa permanece administrada fora do workflow.
 
-Push em `develop` faz CD para homologação; push em `main` faz CD para produção após os gates de aprovação. Pull Requests executam apenas CI estático. Pushes em branches feature não podem iniciar chamadas AWS, Plan ou Apply. `workflow_dispatch` só habilita os jobs de deploy quando executado em `develop` ou `main`. A região permanece `us-east-1`. Não cadastre `AWS_LAMBDA_FUNCTION_NAME`: o nome deriva do default Terraform `autoflow-cpf-validator` mais o ambiente (`-homolog` ou `-production`).
+Push em `develop` faz CD para homologação; push em `main` protegida faz CD para produção após os gates de aprovação. Pull Requests e push em `feature/**` executam somente CI. Essas branches não podem iniciar chamadas AWS, Plan ou Apply. `workflow_dispatch` só habilita os jobs de deploy quando executado em `develop` ou `main`. A região é fornecida pelo Environment e validada contra os recursos. Não cadastre `AWS_LAMBDA_FUNCTION_NAME`: o nome deriva do default Terraform `autoflow-cpf-validator` mais o ambiente (`-homolog` ou `-production`).
 
 ## GitHub Actions — Secrets
 
@@ -13,6 +13,7 @@ Push em `develop` faz CD para homologação; push em `main` faz CD para produç�
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Credenciais temporárias da mesma sessão AWS | Secrets separados em cada Environment; renovar em conjunto após expiração da sessão | Plan e Apply | Não aplicável | `.github/workflows/pipeline.yml`; obrigatórios e usados em `configure-aws-credentials`. |
 | `DATABASE_USERNAME`, `DATABASE_PASSWORD` | Credenciais de conexão Lambda ao PostgreSQL do ambiente | Secrets separados em cada Environment; apontam ao RDS daquele ambiente | Plan e Apply/runtime | Não aplicável | Workflow → `TF_VAR_db_username/password` → Lambda; sem defaults, sensíveis. |
 | `JWT_SECRET` | Chave HS256 usada pela Lambda para assinar JWT | Secret separado em cada Environment; deve ser igual a `AUTOFLOW_JWT_SECRET` da aplicação no mesmo ambiente | Plan e Apply/runtime | Não aplicável | Workflow → `TF_VAR_jwt_secret`; obrigatório, sem default; Terraform valida mínimo de 32 caracteres. |
+| `TF_PLAN_ENCRYPTION_KEY` | Chave que cifra o artifact Terraform Plan | Secret separado em cada GitHub Environment | Plan e Apply | Não aplicável | Obrigatório no Environment; usado por OpenPGP para criptografar antes do upload e descriptografar no Apply aprovado. Não versionar nem imprimir. |
 
 ## GitHub Actions — Variables
 
@@ -43,11 +44,13 @@ As keys são valores externos do GitHub Environment, não caminhos fixados no wo
 
 O nome do root não determina o sufixo da key nesta documentação; confirme o valor autoritativo em cada Environment e mantenha exatamente o mesmo valor nas referências remotas. A configuração atual do Terraform da Lambda usa um único `AWS_TERRAFORM_STATE_BUCKET` para seu backend e para `terraform_remote_state`, portanto esse bucket precisa conter as keys de VPC/EKS e RDS do mesmo Environment e pertencer à conta esperada.
 
+Os backends S3 recebem `expected_bucket_owner`. O data source embutido `terraform_remote_state` no Terraform 1.16.5 rejeita esse argumento; antes do init, o workflow verifica as keys remotas VPC/EKS e RDS com `head-object --expected-bucket-owner` na conta do Environment.
+
 ### Risco de mudança de key e migração
 
 O workflow/documentação anterior do PR #28 exigia paths fixos sem prefixo de Environment. Isso era uma regra local do repositório, não evidência da key existente na AWS. O State remoto não foi consultado nesta alteração. Se o valor atualmente configurado para um State existente ainda não tiver o prefixo exigido, alterá-lo diretamente faz o Terraform selecionar um backend vazio: a Lambda pode parecer não gerenciada e um Plan pode propor criação/recriação. O guard da Lambda bloqueia quando a função já existe sem State; a ausência de qualquer State remoto VPC/EKS ou RDS também interrompe o Plan antes de inicializar o backend. Esses guards evitam prosseguir, mas não substituem reconciliação/migração controlada do State. Não habilite o CD até confirmar que cada key prefixada já é autoritativa ou que a migração aprovada foi concluída.
 
-No `develop` atual de `autoflow`, a documentação ainda descreve keys sem prefixo e Variables no escopo do repositório. Esse contrato precisa ser alinhado em uma alteração própria da aplicação antes de usar o mesmo conjunto de States para o deploy dedicado completo. Nenhuma configuração, State ou arquivo dos outros repositórios foi alterado por esta correção.
+O contrato da aplicação também exige prefixo por Environment e não possui default para a key RDS remota; o consumidor usa a mesma key publicada pelo root RDS. Cada correção permanece em sua branch/PR próprio. Esta documentação não comprova que os objetos S3 estejam reconciliados nem que qualquer pipeline tenha sido implantado.
 
 ## Terraform inputs — `infra/variables.tf`
 
@@ -79,7 +82,7 @@ No `develop` atual de `autoflow`, a documentação ainda descreve keys sem prefi
 | `DB_USERNAME`, `DB_PASSWORD` | Variáveis de aplicação; autenticação DB | Runtime derivado do Secret; local via ambiente seguro | CI não; CD/runtime | Não aplicável | `handler.py`; obrigatórias. GitHub usa `DATABASE_USERNAME/PASSWORD`, Terraform recebe `db_username/password` e configuração Lambda usa nomes `DB_*`. |
 | `JWT_SECRET`, `JWT_EXPIRES_IN_SECONDS` | Variáveis de aplicação; assinatura e duração JWT | Runtime Lambda/local seguro | CI não; CD/runtime | Não aplicável; `3600` | `handler.py`; segredo obrigatório, duração default `3600`; alinhamento de segredo com backend necessário. |
 
-`pipeline.yml` executa CI estático em PRs para `develop`/`main` e push em `develop`/`main`; não associa credenciais AWS ao job de CI. Push em `develop` ou `main` seleciona o Environment correspondente, gera o ZIP e o publica antes do Plan no prefixo `lambda-packages/sha256/` do bucket de state daquele ambiente, usando PutObject condicional (`If-None-Match: *`). O helper exige Versioning habilitado, valida checksum SHA-256 e registra o VersionId. O Terraform recebe bucket, key, hash e VersionId como variáveis; o Apply usa o plan salvo que fixa essa mesma versão S3 e revalida pacote, checksum, VersionId e fingerprint das configurações de State/conta/ambiente após a aprovação do Environment. O artifact (plan, ZIP e metadados) é confidencial e retido por um dia. Não se cria bucket ou recurso de pacote no state.
+`pipeline.yml` executa CI estático em PRs e push em `feature/**`; esses jobs não recebem credenciais AWS. Push em `develop` ou `main` protegida seleciona o Environment correspondente, gera o ZIP e o publica antes do Plan no prefixo `lambda-packages/sha256/` do bucket daquele ambiente, usando PutObject condicional (`If-None-Match: *`). O helper exige Versioning habilitado, valida checksum SHA-256 e registra o VersionId. O Plan Terraform é criptografado com OpenPGP antes de ser publicado; o Apply aprovado confere integridade, Environment, run, attempt, commit, pacote, checksum, VersionId e fingerprint antes de descriptografar e aplicar exatamente o mesmo Plan. O artifact é retido por um dia. Não se cria bucket ou recurso de pacote no State.
 
 O prefixo de pacotes deve permanecer fora de regras de lifecycle que expirem os objetos enquanto planos puderem aguardar aprovação. A escrita condicional evita sobrescrever uma key existente; a role de CI não deve receber `s3:DeleteObject` ou `s3:DeleteObjectVersion` nesse prefixo. Habilite Versioning no bucket antes de usar o deploy. Se o bucket exigir SSE-KMS, conceda também as permissões KMS correspondentes ao principal do workflow.
 

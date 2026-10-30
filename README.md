@@ -37,11 +37,11 @@ O workflow usa o mesmo root Terraform para os dois ambientes:
 - `develop` seleciona o GitHub Environment `homolog` e mantém a função `autoflow-cpf-validator-homolog`.
 - `main` seleciona o Environment `production` e cria/atualiza `autoflow-cpf-validator-production`.
 - Push em uma dessas branches executa Plan e Apply para o ambiente correspondente; ambos usam o Environment da branch, e os Required reviewers configurados nele são gates obrigatórios. O Apply preserva os guards contra Destroy, Replace e mudança de identidade da Lambda.
-- Pull Requests executam somente CI estático. Push em branches feature não dispara o workflow de deploy, e `workflow_dispatch` só habilita Plan/Apply quando executado em `develop` ou `main`.
+- Pull Requests e pushes em `feature/**` executam somente CI estático. `workflow_dispatch` só habilita Plan/Apply quando executado em `develop` ou `main`.
 
-Configure os Environments `homolog` e `production`, restringindo deployments respectivamente a `develop` e `main`. Em cada um, cadastre suas próprias Variables e Secrets, habilite Required reviewers e defina `TERRAFORM_APPLY_APPROVAL_CONFIGURED=true` somente depois de confirmar a regra. Os nomes necessários e as chaves de state estão em [variables-and-secrets.md](docs/variables-and-secrets.md). Credenciais AWS temporárias, dados PostgreSQL, JWT Secret e role Lambda são fornecidos externamente; não use valores de um ambiente no outro.
+Configure os Environments `homolog` e `production`, restringindo deployments respectivamente a `develop` e `main`. Em cada um, cadastre suas próprias Variables e Secrets, incluindo `TF_PLAN_ENCRYPTION_KEY`, habilite Required reviewers e defina `TERRAFORM_APPLY_APPROVAL_CONFIGURED=true` somente depois de confirmar a regra. Os nomes necessários e as chaves de State estão em [variables-and-secrets.md](docs/variables-and-secrets.md). Credenciais AWS temporárias, dados PostgreSQL, JWT Secret, chave de criptografia e role Lambda são fornecidos externamente; não use valores de um ambiente no outro.
 
-Configure também a proteção da branch `main` com Pull Request obrigatório e checks de CI requeridos antes de promovê-la. A proteção do Environment controla os deployments e não substitui a proteção da branch.
+Configure também a proteção da branch `main` com Pull Request obrigatório e checks de CI requeridos antes de promovê-la. Os jobs de Plan/Apply production exigem `github.ref_protected`; a configuração externa de rulesets continua manual. A proteção do Environment controla os deployments e não substitui a proteção da branch.
 
 O bucket de pacotes Lambda reutiliza `AWS_TERRAFORM_STATE_BUCKET`, mas o prefixo `lambda-packages/sha256/` é separado das keys dos states. Antes de habilitar o deploy, prepare os states de VPC/EKS e RDS do mesmo ambiente, no bucket pertencente à conta indicada por `AWS_EXPECTED_ACCOUNT_ID`. Na mesma conta, homolog e produção podem compartilhar bucket, mas usam keys diferentes. Em contas diferentes, cada Environment usa seu próprio bucket e states.
 
@@ -60,7 +60,7 @@ Para criar localmente o pacote de deploy determinístico, use Docker e Bash (por
 bash build.sh
 ```
 
-O pipeline publica o pacote e executa Terraform somente para `develop`/`homolog` ou `main`/`production`. Para uma execução manual, selecione uma dessas branches no workflow; o mesmo Environment, preflight de conta e gates de aprovação continuam obrigatórios. Mudanças em PR e branches feature não recebem credenciais AWS e não executam Plan/Apply.
+O pipeline publica o pacote e executa Terraform somente para `develop`/`homolog` ou `main` protegida/`production`. O Plan é criptografado antes de ser publicado como artifact por um dia; o Apply aprovado confere integridade, run, commit e fingerprint antes de descriptografá-lo. Para uma execução manual, selecione uma dessas branches no workflow; o mesmo Environment, preflight de conta e gates de aprovação continuam obrigatórios. Mudanças em PR e branches feature não recebem credenciais AWS e não executam Plan/Apply.
 
 Para validar o Terraform sem acessar o backend remoto:
 

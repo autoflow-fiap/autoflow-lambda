@@ -2,7 +2,7 @@ name: Lambda Pipeline
 
 on:
   push:
-    branches: [develop, main]
+    branches: [develop, main, 'feature/**']
   pull_request:
     types: [opened, synchronize, reopened]
     branches: [develop, main]
@@ -50,7 +50,7 @@ jobs:
 
   plan:
     name: Terraform Plan ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
-    if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref != 'refs/heads/main' || github.ref_protected)
     needs: checks
     outputs:
       deployment_config_fingerprint: ${{ steps.deployment_config.outputs.fingerprint }}
@@ -87,6 +87,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VARIABLE_NAMES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/environments/$GITHUB_DEPLOYMENT_ENVIRONMENT/variables?per_page=30" --jq '.variables[].name')
+          for name in AWS_REGION AWS_EXPECTED_ACCOUNT_ID AWS_TERRAFORM_STATE_BUCKET AWS_TF_STATE_KEY AWS_INFRA_STATE_KEY AWS_RDS_STATE_KEY AWS_LAMBDA_EXECUTION_ROLE_ARN TERRAFORM_APPLY_APPROVAL_CONFIGURED; do
+            grep -Fxq -- "$name" <<< "$VARIABLE_NAMES" || { echo "A Variable $name precisa estar cadastrada no GitHub Environment selecionado." >&2; exit 1; }
+          done
+          SECRET_NAMES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/environments/$GITHUB_DEPLOYMENT_ENVIRONMENT/secrets?per_page=100" --jq '.secrets[].name')
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN DATABASE_USERNAME DATABASE_PASSWORD JWT_SECRET TF_PLAN_ENCRYPTION_KEY; do
+            grep -Fxq -- "$name" <<< "$SECRET_NAMES" || { echo "O Secret $name precisa estar cadastrado no GitHub Environment selecionado." >&2; exit 1; }
+          done
           test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && test -n "$AWS_SESSION_TOKEN"
           [[ "$AWS_EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
           test "$AWS_REGION" = us-east-1
@@ -167,21 +175,29 @@ jobs:
             "$TF_VAR_role_arn" | sha256sum | cut -d ' ' -f 1)
           printf '%s\n' "$FINGERPRINT" > lambda-deployment-config.sha256
           printf 'fingerprint=%s\n' "$FINGERPRINT" >> "$GITHUB_OUTPUT"
-      - name: Calcular SHA-256 do plano
+      - name: Criptografar plano e registrar vínculo ao run e commit
         working-directory: infra
+        env:
+          TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
         run: |
-          sha256sum lambda.tfplan > lambda.tfplan.sha256
-          printf '%s\n' "$GITHUB_SHA" > lambda.tfplan.commit
+          set -euo pipefail
+          umask 077
+          test -n "$TF_PLAN_ENCRYPTION_KEY"
+          python -c 'import os; assert len(os.environ["TF_PLAN_ENCRYPTION_KEY"]) >= 32, "TF_PLAN_ENCRYPTION_KEY precisa ter ao menos 32 caracteres"'
+          printf '%s\n' "$TF_PLAN_ENCRYPTION_KEY" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 --output lambda.tfplan.gpg lambda.tfplan
+          python -c 'import json,os; json.dump({"run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],"commit":os.environ["GITHUB_SHA"]}, open("lambda-plan-metadata.json", "w", encoding="utf-8"), sort_keys=True)'
+          sha256sum lambda.tfplan.gpg lambda-plan-metadata.json lambda-deployment-config.sha256 lambda-package.json > lambda.tfplan.sha256
+          rm -f lambda.tfplan
       - name: Calcular SHA-256 do pacote Lambda
         run: sha256sum lambda.zip > lambda.zip.sha256
       - name: Armazenar plan confidencial desta execução
         uses: actions/upload-artifact@v4
         with:
-          name: lambda-tfplan-${{ github.run_id }}
+          name: lambda-tfplan-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
           path: |
-            infra/lambda.tfplan
+            infra/lambda.tfplan.gpg
             infra/lambda.tfplan.sha256
-            infra/lambda.tfplan.commit
+            infra/lambda-plan-metadata.json
             infra/lambda-deployment-config.sha256
             infra/lambda-package.json
             lambda.zip
@@ -189,11 +205,13 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
-          overwrite: true
+      - name: Limpar cópias locais do Plan
+        if: always()
+        run: rm -f infra/lambda.tfplan infra/lambda.tfplan.gpg infra/lambda.tfplan.sha256 infra/lambda-plan-metadata.json infra/lambda-deployment-config.sha256
 
   apply:
     name: Terraform Apply ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }} (aprovação requerida)
-    if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref != 'refs/heads/main' || github.ref_protected)
     needs: plan
     runs-on: ubuntu-latest
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
@@ -225,6 +243,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          VARIABLE_NAMES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/environments/$GITHUB_DEPLOYMENT_ENVIRONMENT/variables?per_page=30" --jq '.variables[].name')
+          for name in AWS_REGION AWS_EXPECTED_ACCOUNT_ID AWS_TERRAFORM_STATE_BUCKET AWS_TF_STATE_KEY AWS_INFRA_STATE_KEY AWS_RDS_STATE_KEY AWS_LAMBDA_EXECUTION_ROLE_ARN TERRAFORM_APPLY_APPROVAL_CONFIGURED; do
+            grep -Fxq -- "$name" <<< "$VARIABLE_NAMES" || { echo "A Variable $name precisa estar cadastrada no GitHub Environment selecionado." >&2; exit 1; }
+          done
+          SECRET_NAMES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/environments/$GITHUB_DEPLOYMENT_ENVIRONMENT/secrets?per_page=100" --jq '.secrets[].name')
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN DATABASE_USERNAME DATABASE_PASSWORD JWT_SECRET TF_PLAN_ENCRYPTION_KEY; do
+            grep -Fxq -- "$name" <<< "$SECRET_NAMES" || { echo "O Secret $name precisa estar cadastrado no GitHub Environment selecionado." >&2; exit 1; }
+          done
           test "$APPROVAL_CONFIGURED" = true || { echo "Apply bloqueado: configure Required reviewers no Environment $TF_VAR_environment e TERRAFORM_APPLY_APPROVAL_CONFIGURED=true." >&2; exit 1; }
           REVIEWERS=$(gh api "repos/$GITHUB_REPOSITORY/environments/$TF_VAR_environment" --jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length')
           test "$REVIEWERS" -gt 0 || { echo "Apply bloqueado: $TF_VAR_environment não possui Required reviewers configurados." >&2; exit 1; }
@@ -275,19 +301,19 @@ jobs:
           for key in "$TF_VAR_infra_state_key" "$TF_VAR_rds_state_key"; do aws s3api head-object --bucket "$TF_STATE_BUCKET" --key "$key" --expected-bucket-owner "$AWS_EXPECTED_ACCOUNT_ID" >/dev/null; done
       - uses: actions/download-artifact@v4
         with:
-          name: lambda-tfplan-${{ github.run_id }}
+          name: lambda-tfplan-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
           path: .
       - name: Verificar integridade do pacote Lambda
         run: sha256sum --check lambda.zip.sha256
       - name: Validar pacote e versão imutável no S3
         working-directory: infra
         run: python ../scripts/lambda_package_s3.py verify --file ../lambda.zip --metadata lambda-package.json --bucket "$TF_STATE_BUCKET" --region "$AWS_REGION" --expected-owner "$AWS_EXPECTED_ACCOUNT_ID"
-      - name: Confirmar commit de origem do plano
+      - name: Confirmar integridade e vínculo do plano ao run e commit
         working-directory: infra
-        run: test "$(cat lambda.tfplan.commit)" = "$GITHUB_SHA"
-      - name: Verificar integridade SHA-256
-        working-directory: infra
-        run: sha256sum --check lambda.tfplan.sha256
+        run: |
+          set -euo pipefail
+          sha256sum --check lambda.tfplan.sha256
+          python -c 'import json,os,sys; m=json.load(open("lambda-plan-metadata.json", encoding="utf-8")); sys.exit(not (m == {"run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],"commit":os.environ["GITHUB_SHA"]}))'
       - name: Revalidar fingerprint do Environment e dos States
         working-directory: infra
         run: |
@@ -306,6 +332,17 @@ jobs:
             echo "Environment, conta, bucket, key de State ou role divergente do Plan; Apply bloqueado." >&2
             exit 1
           }
+      - name: Descriptografar somente o plano aprovado
+        working-directory: infra
+        env:
+          TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$TF_PLAN_ENCRYPTION_KEY"
+          python -c 'import os; assert len(os.environ["TF_PLAN_ENCRYPTION_KEY"]) >= 32, "TF_PLAN_ENCRYPTION_KEY precisa ter ao menos 32 caracteres"'
+          printf '%s\n' "$TF_PLAN_ENCRYPTION_KEY" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --decrypt --output lambda.tfplan lambda.tfplan.gpg
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.16.5"
@@ -321,3 +358,7 @@ jobs:
       - name: Aplicar exatamente o plano revisado
         working-directory: infra
         run: terraform apply -input=false lambda.tfplan
+      - name: Remover cópias locais do plano
+        if: always()
+        working-directory: infra
+        run: rm -f lambda.tfplan lambda.tfplan.gpg lambda.tfplan.sha256 lambda-plan-metadata.json lambda-deployment-config.sha256

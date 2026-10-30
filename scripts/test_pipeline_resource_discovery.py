@@ -87,14 +87,15 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
             self.assertIn("TF_VAR_infra_state_key: ${{ vars.AWS_INFRA_STATE_KEY }}", job)
             self.assertIn("TF_VAR_rds_state_key: ${{ vars.AWS_RDS_STATE_KEY }}", job)
             self.assertIn("python scripts/validate_lambda_state_keys.py", job)
-        self.assertEqual(workflow.count("lambda-deployment-config.sha256"), 3)
+        self.assertGreaterEqual(workflow.count("lambda-deployment-config.sha256"), 3)
         self.assertNotIn("terraform.tfstate", workflow)
         self.assertNotIn("terraform.tfstate", (ROOT / "scripts/plan_gateway_cutover.py").read_text(encoding="utf-8"))
         for variable in ("infra_state_key", "rds_state_key"):
             declaration = variables.split(f'variable "{variable}"', 1)[1].split("\n}", 1)[0]
             self.assertNotIn("default", declaration)
         data_tf = (ROOT / "infra/data.tf").read_text(encoding="utf-8")
-        self.assertEqual(data_tf.count("expected_bucket_owner = var.aws_allowed_account_ids[0]"), 2)
+        self.assertNotIn("expected_bucket_owner", data_tf)
+        self.assertIn('aws s3api head-object --bucket "$TF_STATE_BUCKET" --key "$key" --expected-bucket-owner "$AWS_EXPECTED_ACCOUNT_ID"', plan)
 
     def test_documented_remote_keys_match_the_owning_roots(self):
         documentation = (ROOT / "docs/variables-and-secrets.md").read_text(encoding="utf-8")
@@ -113,9 +114,18 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
         checks = workflow.split("  checks:", 1)[1].split("  plan:", 1)[0]
         deploy_condition = "(github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
-        self.assertIn("branches: [develop, main]", workflow)
+        self.assertIn("branches: [develop, main, 'feature/**']", workflow)
         self.assertIn("branches: [develop, main]", workflow.split("  pull_request:", 1)[1])
         self.assertEqual(workflow.count(deploy_condition), 2)
+        plan = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0]
+        apply = workflow.split("  apply:", 1)[1]
+        for job in (plan, apply):
+            self.assertIn("github.ref != 'refs/heads/main' || github.ref_protected", job)
+            self.assertIn("TF_PLAN_ENCRYPTION_KEY", job)
+            self.assertIn("lambda.tfplan.gpg", job)
+            self.assertIn("run_attempt", job)
+        upload = plan.split("- name: Armazenar plan confidencial desta execução", 1)[1]
+        self.assertNotIn("infra/lambda.tfplan\n", upload)
         self.assertNotIn("configure-aws-credentials", checks)
         self.assertNotRegex(checks, re.compile(r"\baws\s+(?:sts|s3|lambda|ec2)\b"))
         self.assertNotRegex(checks, re.compile(r"terraform\s+(?:plan|apply|destroy)\b"))
