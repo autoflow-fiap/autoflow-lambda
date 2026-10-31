@@ -6,7 +6,7 @@ função consulta o RDS PostgreSQL; o backend Spring Boot valida o token e aplic
 ## Papel na arquitetura
 
 `autoflow-infra` gerencia a Amazon API Gateway HTTP API v2, sua integração `AWS_PROXY` e a permissão de invocação da
-Lambda. O Terraform deste repositório gerencia a função e sua execução em rede privada. O login não usa Function URL.
+Lambda. O Terraform deste repositório gerencia a função e sua execução em rede privada.
 
 ```mermaid
 flowchart LR
@@ -49,25 +49,17 @@ remoto nem acessam a AWS.
 
 - `ci.yml` executa testes Python, auditoria de dependências, build do pacote e validação Terraform em PRs para
   `develop`/`main` e pushes para `develop`, `main` e `feature/**`.
-- `pipeline.yml` recebe `push` e `workflow_dispatch` em `develop`/`main`. O caminho automático aguarda sucesso de `Lambda CI`
-  para o mesmo SHA e exige `AUTO_CD_ENABLED=true` no Environment. Na leitura somente-leitura do GitHub em 31/10/2026,
-  essa Variable estava ausente em `homolog` e `production`, então o caminho automático estava desabilitado.
+- `pr-automatico.yaml` cria Pull Request para `develop` após push, exceto em `develop`, `main` e `feat/production-dedicated`.
+- `pipeline.yml` recebe `push` e `workflow_dispatch` em `develop`/`main`. O caminho automático exige a Repository Variable
+  correspondente (`AUTO_CD_ENABLED_HOMOLOG` ou `AUTO_CD_ENABLED_PRODUCTION`) igual a `true` e sucesso de `Lambda CI` para
+  o mesmo SHA.
 - Cada Plan publica um pacote Lambda imutável no S3 antes de gerar o Terraform Plan; isso inclui o caminho automático e
   o dispatch Plan-only (`apply=false`). Esse passo não aplica Terraform nem atualiza a função.
-- O Apply só ocorre por `workflow_dispatch` com `apply=true`, após aprovação independente do Environment e validações do
-  Plan. `TERRAFORM_APPLY_APPROVAL_CONFIGURED` estava `false` nos dois Environments, bloqueando Apply. `develop` seleciona
-  `homolog`; `main` seleciona `production` e requer `github.ref_protected=true`.
-- Regrasets ativos exigiam Pull Request e checks em `develop` e `main`; os Environments tinham Required reviewers e
-  políticas de branch correspondentes. Isso foi verificado somente-leitura no GitHub em 31/10/2026.
-- `pr-automatico.yaml` abre Pull Request para `develop` conforme os filtros do workflow.
+- Apply requer `workflow_dispatch` com `apply=true`, `TERRAFORM_APPLY_APPROVAL_CONFIGURED=true` e validação do Plan.
+  `develop` seleciona `homolog`; `main` seleciona `production` e exige branch protegida. O job usa o Environment
+  selecionado; configure Required reviewers e restrições de branch para proteger o deployment.
+- Configure proteção de branch em `develop` e `main` para exigir Pull Request e checks de CI.
 
 O fluxo depende dos States de VPC/EKS e RDS do mesmo ambiente, do bucket S3 configurado e da role de execução Lambda. A
 API Gateway é provisionada pelo root correspondente em `autoflow-infra`, na sequência descrita no
 [runbook de implantação](https://github.com/autoflow-fiap/autoflow-infra/blob/develop/docs/api-gateway/runbook.md).
-
-## Estado da evidência
-
-**Implementado:** função, Terraform e workflows. **Validado:** a [Lambda CI](https://github.com/autoflow-fiap/autoflow-lambda/actions/runs/41160356788)
-concluiu com sucesso; a [Lambda Pipeline](https://github.com/autoflow-fiap/autoflow-lambda/actions/runs/41160356791) falhou
-no gate antes do Plan. **Implantado:** não comprovado; não há evidência nesta revisão de Apply ou de função Lambda ativa,
-e nenhum endpoint de login é publicado como ativo.

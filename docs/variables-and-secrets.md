@@ -4,7 +4,7 @@ Configure GitHub Environments separados chamados `homolog` e `production`, restr
 
 Antes de promover para `main`, configure também branch protection com Pull Request obrigatório e checks de CI requeridos. Os jobs de Plan e Apply de produção exigem `github.ref_protected`; as regras do Environment protegem o deployment, mas não substituem a proteção da branch. Essa proteção externa permanece administrada fora do workflow.
 
-O workflow `.github/workflows/ci.yml` executa CI em Pull Requests para `develop`/`main` e pushes para `develop`, `main` e `feature/**`. `pipeline.yml` recebe `push` e `workflow_dispatch` em `develop`/`main`. O caminho automático exige `AUTO_CD_ENABLED=true` no Environment selecionado e sucesso da CI para o mesmo SHA; o valor atual da Variable não foi verificado. Ele executa Plan, não Apply. Apply requer dispatch com `apply=true` e nova aprovação do Environment. PRs e branches de feature não recebem credenciais AWS nem iniciam Plan/Apply. A região é fornecida pelo Environment e validada contra os recursos. Não cadastre `AWS_LAMBDA_FUNCTION_NAME`: o nome deriva do default Terraform `autoflow-cpf-validator` mais o ambiente (`-homolog` ou `-production`).
+O workflow `.github/workflows/ci.yml` executa CI em Pull Requests para `develop`/`main` e pushes para `develop`, `main` e `feature/**`. `pipeline.yml` recebe `push` e `workflow_dispatch` em `develop`/`main`. O caminho automático exige a Repository Variable correspondente (`AUTO_CD_ENABLED_HOMOLOG` ou `AUTO_CD_ENABLED_PRODUCTION`) igual a `true` e sucesso da CI para o mesmo SHA; executa Plan, não Apply. Apply requer dispatch com `apply=true` e `TERRAFORM_APPLY_APPROVAL_CONFIGURED=true`. PRs e branches de feature não recebem credenciais AWS nem iniciam Plan/Apply. A região é fornecida pelo Environment e validada contra os recursos. Não cadastre `AWS_LAMBDA_FUNCTION_NAME`: o nome deriva de `lambda_name` e do ambiente (`-homolog` ou `-production`).
 
 ## GitHub Actions — Secrets
 
@@ -26,9 +26,9 @@ O workflow `.github/workflows/ci.yml` executa CI em Pull Requests para `develop`
 | `AWS_INFRA_STATE_KEY` | Key do State VPC/EKS consumido | Variable em cada Environment; deve identificar o mesmo State configurado no root de infraestrutura | Plan e Apply | `homolog/<key VPC-EKS>`; `production/<key VPC-EKS>` | Deve ser igual a `AWS_TF_STATE_KEY_INFRA` do repositório `autoflow-infra`, no mesmo Environment. |
 | `AWS_RDS_STATE_KEY` | Key do State RDS consumido | Variable em cada Environment; deve identificar o mesmo State configurado no root de banco | Plan e Apply | `homolog/<key RDS>`; `production/<key RDS>` | Deve ser igual a `AWS_TF_STATE_KEY` do repositório `autoflow-db` e a `AWS_RDS_STATE_KEY` de `autoflow`, no mesmo Environment. |
 | `AWS_LAMBDA_EXECUTION_ROLE_ARN` | Role de execução Lambda | Variable independente em cada Environment; role aprovada para aquela conta | Plan e Apply | ARN cadastrado externamente, sem versioná-lo | Workflow → `TF_VAR_role_arn`; exige formato de ARN de role AWS com a mesma conta de `AWS_EXPECTED_ACCOUNT_ID` e não possui default no deploy. |
-| `TERRAFORM_APPLY_APPROVAL_CONFIGURED` | Guard operacional adicional | Variable nos dois Environments; `true` só após configurar Required reviewers | Plan e Apply | `true` | Ausente/diferente bloqueia jobs; não substitui a aprovação nativa do Environment. |
-| `AUTO_CD_ENABLED_HOMOLOG` | Habilita o Plan automático após CI aprovada em homologação | Variable acessível ao gate de CI/CD; independente de produção | Gate de `push` em `develop` | `true` | Ausente ou diferente de `true` mantém homologação desabilitada. |
-| `AUTO_CD_ENABLED_PRODUCTION` | Habilita o Plan automático após CI aprovada em produção | Variable acessível ao gate de CI/CD; independente de homologação | Gate de `push` em `main` | `true` | Ausente ou diferente de `true` mantém produção desabilitada. |
+| `TERRAFORM_APPLY_APPROVAL_CONFIGURED` | Guard adicional para Apply | Variable em cada Environment; `true` após configurar as proteções de deployment | Apply | `true` | Ausente ou diferente de `true` bloqueia Apply; não substitui a aprovação nativa do Environment. |
+| `AUTO_CD_ENABLED_HOMOLOG` | Habilita Plan automático após CI em homologação | Variable acessível ao gate sem Environment; independente de produção | Gate de `push` em `develop` | `true` | Ausente ou diferente de `true` mantém homologação desabilitada. |
+| `AUTO_CD_ENABLED_PRODUCTION` | Habilita Plan automático após CI em produção | Variable acessível ao gate sem Environment; independente de homologação | Gate de `push` em `main` | `true` | Ausente ou diferente de `true` mantém produção desabilitada. |
 
 As credenciais e configurações AWS acima não devem ser cadastradas como Repository Variables/Secrets compartilhadas entre ambientes. As duas Variables `AUTO_CD_ENABLED_*` são a exceção não sensível usada pelo gate sem Environment: elas mantêm opt-in independente por branch, enquanto os jobs de deploy continuam associados ao Environment selecionado. Em cada Environment, configure o mesmo `AWS_EXPECTED_ACCOUNT_ID` e bucket nos repositórios cujos States são consumidos entre si. O bucket deve pertencer à conta esperada. Em contas diferentes, cada Environment usa a conta e o bucket próprios, sem compartilhar States entre contas.
 
@@ -47,13 +47,6 @@ As keys são valores externos do GitHub Environment, não caminhos fixados no wo
 O nome do root não determina o sufixo da key nesta documentação; confirme o valor autoritativo em cada Environment e mantenha exatamente o mesmo valor nas referências remotas. A configuração atual do Terraform da Lambda usa um único `AWS_TERRAFORM_STATE_BUCKET` para seu backend e para `terraform_remote_state`, portanto esse bucket precisa conter as keys de VPC/EKS e RDS do mesmo Environment e pertencer à conta esperada.
 
 O backend S3 e os data sources `terraform_remote_state` usam `allowed_account_ids`, derivados de `AWS_EXPECTED_ACCOUNT_ID` fornecido pelo Environment. As chamadas AWS CLI mantêm `--expected-bucket-owner`; antes do init, o workflow verifica as keys remotas VPC/EKS e RDS com `head-object --expected-bucket-owner` na conta do Environment. Esse argumento de ownership não é passado à configuração Terraform.
-
-### Contrato de Terraform State
-
-Antes de alterar uma key, mantenha a correspondência com o State autoritativo do mesmo ambiente: `AWS_INFRA_STATE_KEY`
-deve ser igual a `AWS_TF_STATE_KEY_INFRA` de `autoflow-infra`, e `AWS_RDS_STATE_KEY` deve ser igual a `AWS_TF_STATE_KEY`
-de `autoflow-db`. Cada root usa uma key própria, prefixada por `homolog/` ou `production/`. O workflow valida a relação
-entre as keys antes de gerar o Plan.
 
 ## Terraform inputs — `infra/variables.tf`
 
