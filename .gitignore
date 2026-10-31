@@ -213,6 +213,32 @@ tempCodeRunnerFile.py
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+.terraform/*
+*/.terraform/*
+*/.terraform*
+.terraform/
+
+__pycache__
 
 # Streamlit
 .streamlit/secrets.toml
+.idea
+
+# State, planos e configuração local sensível do Terraform
+*.tfstate*
+*.tfvars*
+backend.*.hcl
+*.tfplan*
+*.plan*
+crash.log
+crash.*.log
+.terraform.tfstate.lock.info
+.aws/
+credentials
+.env
+.env.*
+*.zip
+*.tmp
+*.temp
+*.swp
+*~

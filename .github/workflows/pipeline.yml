@@ -1,0 +1,426 @@
+name: Lambda Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Autorizar Apply após revisão independente do Plan
+        type: boolean
+        required: true
+        default: false
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: autoflow-lambda-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Validar CI aprovada e commit de origem
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') &&
+       (github.ref != 'refs/heads/main' || github.ref_protected)) ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') &&
+       (github.ref != 'refs/heads/main' || github.ref_protected))
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.validate.outputs.branch }}
+      sha: ${{ steps.validate.outputs.sha }}
+      environment: ${{ steps.validate.outputs.environment }}
+      branch_protected: ${{ steps.validate.outputs.branch_protected }}
+      auto_cd_enabled: ${{ steps.validate.outputs.auto_cd_enabled }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validar origem da CI e proteger main
+        id: validate
+        env:
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          CI_WORKFLOW_NAME: Lambda CI
+          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          AUTO_CD_ENABLED_HOMOLOG: ${{ vars.AUTO_CD_ENABLED_HOMOLOG }}
+          AUTO_CD_ENABLED_PRODUCTION: ${{ vars.AUTO_CD_ENABLED_PRODUCTION }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: python scripts/validate_cd_trigger.py
+
+  checks:
+    name: CI Lambda e Terraform
+    if: needs.gate.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.gate.outputs.auto_cd_enabled == 'true')
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+      - name: Confirmar checkout do commit validado
+        env:
+          DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.16.5"
+          terraform_wrapper: false
+      - name: Instalar dependências
+        run: python -m pip install -r requirements.txt
+      - name: Testes Python e guards
+        run: |
+          python -m unittest test_handler test_http_api -v
+          python -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Auditar dependências
+        run: |
+          python -m pip install pip-audit
+          pip-audit -r requirements.txt
+      - name: Validar pacote Lambda
+        run: bash ./build.sh
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive infra
+      - name: Terraform init sem backend
+        run: terraform -chdir=infra init -backend=false -input=false
+      - name: Terraform validate
+        run: terraform -chdir=infra validate
+
+  plan:
+    name: Terraform Plan ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+    if: needs.gate.result == 'success' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.ref != 'refs/heads/main' || github.ref_protected) && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.gate.outputs.auto_cd_enabled == 'true'))
+    needs: [gate, checks]
+    outputs:
+      deployment_config_fingerprint: ${{ steps.deployment_config.outputs.fingerprint }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+    env:
+      GITHUB_DEPLOYMENT_ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+      DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
+      TF_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+      TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}
+      AWS_LAMBDA_FUNCTION_NAME: autoflow-cpf-validator-${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+      TF_VAR_aws_allowed_account_ids: '["${{ vars.AWS_EXPECTED_ACCOUNT_ID }}"]'
+      TF_VAR_region: ${{ vars.AWS_REGION }}
+      TF_VAR_environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+      TF_VAR_role_arn: ${{ vars.AWS_LAMBDA_EXECUTION_ROLE_ARN }}
+      TF_VAR_terraform_state_bucket: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+      TF_VAR_infra_state_key: ${{ vars.AWS_INFRA_STATE_KEY }}
+      TF_VAR_rds_state_key: ${{ vars.AWS_RDS_STATE_KEY }}
+      TF_VAR_db_username: ${{ secrets.DATABASE_USERNAME }}
+      TF_VAR_db_password: ${{ secrets.DATABASE_PASSWORD }}
+      TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+      - name: Confirmar checkout do commit aprovado pela CI
+        run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+      - name: Validar valores injetados pelo Environment
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
+          AWS_TERRAFORM_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          AWS_TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}
+          AWS_INFRA_STATE_KEY: ${{ vars.AWS_INFRA_STATE_KEY }}
+          AWS_RDS_STATE_KEY: ${{ vars.AWS_RDS_STATE_KEY }}
+          AWS_LAMBDA_EXECUTION_ROLE_ARN: ${{ vars.AWS_LAMBDA_EXECUTION_ROLE_ARN }}
+          TERRAFORM_APPLY_APPROVAL_CONFIGURED: ${{ vars.TERRAFORM_APPLY_APPROVAL_CONFIGURED }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          DATABASE_USERNAME: ${{ secrets.DATABASE_USERNAME }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION AWS_EXPECTED_ACCOUNT_ID AWS_TERRAFORM_STATE_BUCKET AWS_TF_STATE_KEY AWS_INFRA_STATE_KEY AWS_RDS_STATE_KEY AWS_LAMBDA_EXECUTION_ROLE_ARN TERRAFORM_APPLY_APPROVAL_CONFIGURED; do
+            [[ -n "${!name}" ]] || { echo "A Variable $name precisa ter valor no GitHub Environment selecionado." >&2; exit 1; }
+          done
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN DATABASE_USERNAME DATABASE_PASSWORD JWT_SECRET TF_PLAN_ENCRYPTION_KEY; do
+            [[ -n "${!name}" ]] || { echo "O Secret $name precisa ter valor no GitHub Environment selecionado." >&2; exit 1; }
+          done
+          test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && test -n "$AWS_SESSION_TOKEN"
+          [[ "$AWS_EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          test "$AWS_REGION" = us-east-1
+          test -n "$TF_STATE_BUCKET"
+          test "$GITHUB_DEPLOYMENT_ENVIRONMENT" = "$TF_VAR_environment"
+          [[ "$TF_VAR_role_arn" =~ ^arn:aws:iam::${AWS_EXPECTED_ACCOUNT_ID}:role/.+ ]]
+          test "$AWS_LAMBDA_FUNCTION_NAME" = "autoflow-cpf-validator-$TF_VAR_environment"
+          test "$TF_VAR_terraform_state_bucket" = "$TF_STATE_BUCKET"
+          python scripts/validate_lambda_state_keys.py
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Validar identidade AWS
+        run: python scripts/verify_aws_account.py
+      - name: Validar região e states remotos existentes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(aws ec2 describe-availability-zones --region "$AWS_REGION" --query 'AvailabilityZones[0].RegionName' --output text)" = "$AWS_REGION"
+          aws s3api head-bucket --bucket "$TF_STATE_BUCKET" --expected-bucket-owner "$AWS_EXPECTED_ACCOUNT_ID"
+          for key in "$TF_VAR_infra_state_key" "$TF_VAR_rds_state_key"; do
+            aws s3api head-object --bucket "$TF_STATE_BUCKET" --key "$key" --expected-bucket-owner "$AWS_EXPECTED_ACCOUNT_ID" >/dev/null
+          done
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.16.5"
+          terraform_wrapper: false
+      - name: Construir pacote Lambda para o plan
+        run: bash ./build.sh
+      - name: Inicializar state remoto existente
+        env:
+          AWS_TERRAFORM_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          AWS_TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}
+        run: |
+          python scripts/state_resource_guard.py --bucket "$AWS_TERRAFORM_STATE_BUCKET" --key "$AWS_TF_STATE_KEY" -- aws lambda get-function --function-name "$AWS_LAMBDA_FUNCTION_NAME" --query Configuration.FunctionName --output text
+          cd infra
+          terraform init -input=false -reconfigure -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="key=$TF_STATE_KEY" -backend-config="region=$AWS_REGION" -backend-config="allowed_account_ids=$TF_VAR_aws_allowed_account_ids" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+      - name: Terraform validate
+        working-directory: infra
+        run: terraform validate
+      - name: Publicar pacote Lambda imutável no S3
+        id: package
+        working-directory: infra
+        run: python ../scripts/lambda_package_s3.py publish --file ../lambda.zip --bucket "$TF_STATE_BUCKET" --region "$AWS_REGION" --expected-owner "$AWS_EXPECTED_ACCOUNT_ID" --metadata lambda-package.json --github-output "$GITHUB_OUTPUT"
+      - name: Gerar plan confidencial
+        working-directory: infra
+        env:
+          TF_VAR_lambda_package_bucket: ${{ steps.package.outputs.bucket }}
+          TF_VAR_lambda_package_key: ${{ steps.package.outputs.key }}
+          TF_VAR_lambda_package_source_code_hash: ${{ steps.package.outputs.source_code_hash }}
+          TF_VAR_lambda_package_version: ${{ steps.package.outputs.version_id }}
+        run: terraform plan -input=false -no-color -out=lambda.tfplan > /dev/null 2>&1
+      - name: Guard de identidade e ações destrutivas
+        working-directory: infra
+        run: |
+          terraform show -json lambda.tfplan > lambda-plan.json
+          python ../scripts/review_lambda_plan.py lambda-plan.json
+      - name: Fingerprint do Environment e dos States selecionados
+        id: deployment_config
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          FINGERPRINT=$(printf '%s\0' \
+            "$GITHUB_DEPLOYMENT_ENVIRONMENT" \
+            "$AWS_EXPECTED_ACCOUNT_ID" \
+            "$AWS_REGION" \
+            "$TF_STATE_BUCKET" \
+            "$TF_STATE_KEY" \
+            "$TF_VAR_infra_state_key" \
+            "$TF_VAR_rds_state_key" \
+            "$AWS_LAMBDA_FUNCTION_NAME" \
+            "$TF_VAR_role_arn" | sha256sum | cut -d ' ' -f 1)
+          printf '%s\n' "$FINGERPRINT" > lambda-deployment-config.sha256
+          printf 'fingerprint=%s\n' "$FINGERPRINT" >> "$GITHUB_OUTPUT"
+      - name: Criptografar plano e registrar vínculo ao run e commit
+        working-directory: infra
+        env:
+          TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$TF_PLAN_ENCRYPTION_KEY"
+          python -c 'import os; assert len(os.environ["TF_PLAN_ENCRYPTION_KEY"]) >= 32, "TF_PLAN_ENCRYPTION_KEY precisa ter ao menos 32 caracteres"'
+          printf '%s\n' "$TF_PLAN_ENCRYPTION_KEY" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 --output lambda.tfplan.gpg lambda.tfplan
+          python -c 'import json,os; json.dump({"run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],"commit":os.environ["DEPLOY_SHA"]}, open("lambda-plan-metadata.json", "w", encoding="utf-8"), sort_keys=True)'
+          sha256sum lambda.tfplan.gpg lambda-plan-metadata.json lambda-deployment-config.sha256 lambda-package.json > lambda.tfplan.sha256
+          rm -f lambda.tfplan
+      - name: Calcular SHA-256 do pacote Lambda
+        run: sha256sum lambda.zip > lambda.zip.sha256
+      - name: Armazenar plan confidencial desta execução
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-tfplan-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: |
+            infra/lambda.tfplan.gpg
+            infra/lambda.tfplan.sha256
+            infra/lambda-plan-metadata.json
+            infra/lambda-deployment-config.sha256
+            infra/lambda-package.json
+            lambda.zip
+            lambda.zip.sha256
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Limpar cópias locais do Plan
+        if: always()
+        run: rm -f infra/lambda.tfplan infra/lambda.tfplan.gpg infra/lambda.tfplan.sha256 infra/lambda-plan-metadata.json infra/lambda-deployment-config.sha256
+
+  apply:
+    name: Terraform Apply ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }} (aprovação requerida)
+    if: needs.gate.result == 'success' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch' && inputs.apply == true && (github.ref != 'refs/heads/main' || github.ref_protected)
+    needs: [gate, plan]
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+    env:
+      PLAN_DEPLOYMENT_CONFIG_FINGERPRINT: ${{ needs.plan.outputs.deployment_config_fingerprint }}
+      GITHUB_DEPLOYMENT_ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+      DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
+      TF_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+      TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}
+      AWS_LAMBDA_FUNCTION_NAME: autoflow-cpf-validator-${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+      TF_VAR_aws_allowed_account_ids: '["${{ vars.AWS_EXPECTED_ACCOUNT_ID }}"]'
+      TF_VAR_region: ${{ vars.AWS_REGION }}
+      TF_VAR_environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+      TF_VAR_role_arn: ${{ vars.AWS_LAMBDA_EXECUTION_ROLE_ARN }}
+      TF_VAR_terraform_state_bucket: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+      TF_VAR_infra_state_key: ${{ vars.AWS_INFRA_STATE_KEY }}
+      TF_VAR_rds_state_key: ${{ vars.AWS_RDS_STATE_KEY }}
+      TF_VAR_db_username: ${{ secrets.DATABASE_USERNAME }}
+      TF_VAR_db_password: ${{ secrets.DATABASE_PASSWORD }}
+      TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+      - name: Confirmar checkout do commit que gerou o Plan
+        run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+      - name: Validar valores do Environment e sinalização de aprovação
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
+          AWS_TERRAFORM_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          AWS_TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}
+          AWS_INFRA_STATE_KEY: ${{ vars.AWS_INFRA_STATE_KEY }}
+          AWS_RDS_STATE_KEY: ${{ vars.AWS_RDS_STATE_KEY }}
+          AWS_LAMBDA_EXECUTION_ROLE_ARN: ${{ vars.AWS_LAMBDA_EXECUTION_ROLE_ARN }}
+          TERRAFORM_APPLY_APPROVAL_CONFIGURED: ${{ vars.TERRAFORM_APPLY_APPROVAL_CONFIGURED }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          DATABASE_USERNAME: ${{ secrets.DATABASE_USERNAME }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION AWS_EXPECTED_ACCOUNT_ID AWS_TERRAFORM_STATE_BUCKET AWS_TF_STATE_KEY AWS_INFRA_STATE_KEY AWS_RDS_STATE_KEY AWS_LAMBDA_EXECUTION_ROLE_ARN TERRAFORM_APPLY_APPROVAL_CONFIGURED; do
+            [[ -n "${!name}" ]] || { echo "A Variable $name precisa ter valor no GitHub Environment selecionado." >&2; exit 1; }
+          done
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN DATABASE_USERNAME DATABASE_PASSWORD JWT_SECRET TF_PLAN_ENCRYPTION_KEY; do
+            [[ -n "${!name}" ]] || { echo "O Secret $name precisa ter valor no GitHub Environment selecionado." >&2; exit 1; }
+          done
+          test "$TERRAFORM_APPLY_APPROVAL_CONFIGURED" = true || { echo "Apply bloqueado: configure Required reviewers no Environment $TF_VAR_environment e TERRAFORM_APPLY_APPROVAL_CONFIGURED=true." >&2; exit 1; }
+      - name: Exigir credenciais temporárias
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && test -n "$AWS_SESSION_TOKEN"
+          test "$AWS_REGION" = us-east-1
+          [[ "$AWS_EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          test -n "$TF_STATE_BUCKET"
+          test "$GITHUB_DEPLOYMENT_ENVIRONMENT" = "$TF_VAR_environment"
+          test "$AWS_LAMBDA_FUNCTION_NAME" = "autoflow-cpf-validator-$TF_VAR_environment"
+          test "$TF_VAR_terraform_state_bucket" = "$TF_STATE_BUCKET"
+          python scripts/validate_lambda_state_keys.py
+          CURRENT_DEPLOYMENT_CONFIG=$(printf '%s\0' \
+            "$GITHUB_DEPLOYMENT_ENVIRONMENT" \
+            "$AWS_EXPECTED_ACCOUNT_ID" \
+            "$AWS_REGION" \
+            "$TF_STATE_BUCKET" \
+            "$TF_STATE_KEY" \
+            "$TF_VAR_infra_state_key" \
+            "$TF_VAR_rds_state_key" \
+            "$AWS_LAMBDA_FUNCTION_NAME" \
+            "$TF_VAR_role_arn" | sha256sum | cut -d ' ' -f 1)
+          test -n "$PLAN_DEPLOYMENT_CONFIG_FINGERPRINT"
+          test "$CURRENT_DEPLOYMENT_CONFIG" = "$PLAN_DEPLOYMENT_CONFIG_FINGERPRINT" || {
+            echo "Environment, conta, bucket, keys ou role divergentes do Plan; Apply bloqueado." >&2
+            exit 1
+          }
+          [[ "$TF_VAR_role_arn" =~ ^arn:aws:iam::${AWS_EXPECTED_ACCOUNT_ID}:role/.+ ]]
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Revalidar identidade e states remotos
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/verify_aws_account.py
+          test "$(aws ec2 describe-availability-zones --region "$AWS_REGION" --query 'AvailabilityZones[0].RegionName' --output text)" = "$AWS_REGION"
+          aws s3api head-bucket --bucket "$TF_STATE_BUCKET" --expected-bucket-owner "$AWS_EXPECTED_ACCOUNT_ID"
+          for key in "$TF_VAR_infra_state_key" "$TF_VAR_rds_state_key"; do aws s3api head-object --bucket "$TF_STATE_BUCKET" --key "$key" --expected-bucket-owner "$AWS_EXPECTED_ACCOUNT_ID" >/dev/null; done
+      - uses: actions/download-artifact@v4
+        with:
+          name: lambda-tfplan-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: .
+      - name: Verificar integridade do pacote Lambda
+        run: sha256sum --check lambda.zip.sha256
+      - name: Validar pacote e versão imutável no S3
+        working-directory: infra
+        run: python ../scripts/lambda_package_s3.py verify --file ../lambda.zip --metadata lambda-package.json --bucket "$TF_STATE_BUCKET" --region "$AWS_REGION" --expected-owner "$AWS_EXPECTED_ACCOUNT_ID"
+      - name: Confirmar integridade e vínculo do plano ao run e commit
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          sha256sum --check lambda.tfplan.sha256
+          python -c 'import json,os,sys; m=json.load(open("lambda-plan-metadata.json", encoding="utf-8")); sys.exit(not (m == {"run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],"commit":os.environ["DEPLOY_SHA"]}))'
+      - name: Revalidar fingerprint do Environment e dos States
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          CURRENT_DEPLOYMENT_CONFIG=$(printf '%s\0' \
+            "$GITHUB_DEPLOYMENT_ENVIRONMENT" \
+            "$AWS_EXPECTED_ACCOUNT_ID" \
+            "$AWS_REGION" \
+            "$TF_STATE_BUCKET" \
+            "$TF_STATE_KEY" \
+            "$TF_VAR_infra_state_key" \
+            "$TF_VAR_rds_state_key" \
+            "$AWS_LAMBDA_FUNCTION_NAME" \
+            "$TF_VAR_role_arn" | sha256sum | cut -d ' ' -f 1)
+          test "$CURRENT_DEPLOYMENT_CONFIG" = "$(cat lambda-deployment-config.sha256)" || {
+            echo "Environment, conta, bucket, key de State ou role divergente do Plan; Apply bloqueado." >&2
+            exit 1
+          }
+      - name: Descriptografar somente o plano aprovado
+        working-directory: infra
+        env:
+          TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$TF_PLAN_ENCRYPTION_KEY"
+          python -c 'import os; assert len(os.environ["TF_PLAN_ENCRYPTION_KEY"]) >= 32, "TF_PLAN_ENCRYPTION_KEY precisa ter ao menos 32 caracteres"'
+          printf '%s\n' "$TF_PLAN_ENCRYPTION_KEY" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --decrypt --output lambda.tfplan lambda.tfplan.gpg
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.16.5"
+          terraform_wrapper: false
+      - name: Inicializar state remoto existente
+        working-directory: infra
+        run: terraform init -input=false -reconfigure -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="key=$TF_STATE_KEY" -backend-config="region=$AWS_REGION" -backend-config="allowed_account_ids=$TF_VAR_aws_allowed_account_ids" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+      - name: Revalidar identidade e guard do plano
+        working-directory: infra
+        run: |
+          terraform show -json lambda.tfplan > lambda-plan.json
+          python ../scripts/review_lambda_plan.py lambda-plan.json
+      - name: Aplicar exatamente o plano revisado
+        working-directory: infra
+        run: terraform apply -input=false lambda.tfplan
+      - name: Remover cópias locais do plano
+        if: always()
+        working-directory: infra
+        run: rm -f lambda.tfplan lambda.tfplan.gpg lambda.tfplan.sha256 lambda-plan-metadata.json lambda-deployment-config.sha256
