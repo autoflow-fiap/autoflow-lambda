@@ -42,7 +42,7 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
         environment = "environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}"
         self.assertEqual(workflow.count(f"\n    {environment}"), 2)
         plan = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0]
-        apply = workflow.split("  apply:", 1)[1]
+        apply = workflow.split("\n  apply:\n", 1)[1]
         for job in (plan, apply):
             self.assertIn(environment, job)
             self.assertIn("GITHUB_DEPLOYMENT_ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", job)
@@ -65,7 +65,7 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
     def test_expected_account_is_required_before_aws_operations_in_both_jobs(self):
         workflow = (ROOT / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
         plan = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0]
-        apply = workflow.split("  apply:", 1)[1]
+        apply = workflow.split("\n  apply:\n", 1)[1]
         for job in (plan, apply):
             self.assertIn('[[ "$AWS_EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]', job)
             self.assertIn('^arn:aws:iam::${AWS_EXPECTED_ACCOUNT_ID}:role/.+', job)
@@ -81,7 +81,7 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
         variables = (ROOT / "infra/variables.tf").read_text(encoding="utf-8")
         plan = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0]
-        apply = workflow.split("  apply:", 1)[1]
+        apply = workflow.split("\n  apply:\n", 1)[1]
         for job in (plan, apply):
             self.assertIn("TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}", job)
             self.assertIn("TF_VAR_infra_state_key: ${{ vars.AWS_INFRA_STATE_KEY }}", job)
@@ -113,12 +113,16 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
     def test_feature_and_pull_request_events_cannot_run_aws_plan_or_apply(self):
         workflow = (ROOT / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
         checks = workflow.split("  checks:", 1)[1].split("  plan:", 1)[0]
-        deploy_condition = "(github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
-        self.assertIn("branches: [develop, main, 'feature/**']", workflow)
-        self.assertIn("branches: [develop, main]", workflow.split("  pull_request:", 1)[1])
-        self.assertEqual(workflow.count(deploy_condition), 2)
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("branches: [develop, main, 'feature/**']", ci)
+        self.assertIn("branches: [develop, main]", ci.split("  pull_request:", 1)[1])
+        self.assertNotIn("  push:", workflow.split("permissions:", 1)[0])
+        self.assertNotIn("  pull_request:", workflow.split("permissions:", 1)[0])
         plan = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0]
-        apply = workflow.split("  apply:", 1)[1]
+        apply = workflow.split("\n  apply:\n", 1)[1]
+        self.assertIn("github.event_name == 'workflow_dispatch'", plan)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.apply == true", apply)
+        self.assertNotIn("github.event_name == 'push'", plan + apply)
         for job in (plan, apply):
             self.assertIn("github.ref != 'refs/heads/main' || github.ref_protected", job)
             self.assertIn("TF_PLAN_ENCRYPTION_KEY", job)

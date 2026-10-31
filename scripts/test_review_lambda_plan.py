@@ -11,10 +11,13 @@ def change(address, actions, before=None, after=None):
 class ReviewLambdaPlanTests(unittest.TestCase):
     def test_develop_routes_to_homolog_and_main_routes_to_production(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
-        condition = "(github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
-        plan, apply = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0], workflow.split("  apply:", 1)[1]
-        self.assertIn(condition, plan)
-        self.assertIn(condition, apply)
+        conditions = {
+            "plan": "(github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch'",
+            "apply": "(github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch' && inputs.apply == true",
+        }
+        plan, apply = workflow.split("  plan:", 1)[1].split("\n  apply:\n", 1)[0], workflow.split("\n  apply:\n", 1)[1]
+        self.assertIn(conditions["plan"], plan)
+        self.assertIn(conditions["apply"], apply)
         for job in (plan, apply):
             self.assertIn("environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", job)
             self.assertIn("autoflow-cpf-validator-${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", job)
@@ -26,7 +29,7 @@ class ReviewLambdaPlanTests(unittest.TestCase):
     def test_state_keys_are_validated_and_fingerprint_is_rechecked_before_apply(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
         plan = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0]
-        apply = workflow.split("  apply:", 1)[1]
+        apply = workflow.split("\n  apply:\n", 1)[1]
         self.assertIn("GITHUB_DEPLOYMENT_ENVIRONMENT", plan)
         self.assertIn("GITHUB_DEPLOYMENT_ENVIRONMENT", apply)
         self.assertIn("deployment_config_fingerprint: ${{ steps.deployment_config.outputs.fingerprint }}", plan)
@@ -50,11 +53,12 @@ class ReviewLambdaPlanTests(unittest.TestCase):
 
     def test_apply_requires_an_approved_environment_and_is_limited_to_deploy_branches(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
-        apply = workflow.split("  apply:", 1)[1]
+        apply = workflow.split("\n  apply:\n", 1)[1]
         self.assertIn("required_reviewers", apply)
         self.assertIn("TERRAFORM_APPLY_APPROVAL_CONFIGURED", apply)
         self.assertIn("environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", apply)
-        self.assertIn("github.event_name == 'push' || github.event_name == 'workflow_dispatch'", apply)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.apply == true", apply)
+        self.assertNotIn("github.event_name == 'push'", apply)
         self.assertNotIn("pull_request", apply)
 
     def test_plan_still_reviews_destroy_replacement_and_lambda_identity(self):

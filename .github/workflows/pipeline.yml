@@ -1,12 +1,13 @@
 name: Lambda Pipeline
 
 on:
-  push:
-    branches: [develop, main, 'feature/**']
-  pull_request:
-    types: [opened, synchronize, reopened]
-    branches: [develop, main]
   workflow_dispatch:
+    inputs:
+      apply:
+        description: Autorizar Apply após revisão independente do Plan
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -19,6 +20,7 @@ concurrency:
 jobs:
   checks:
     name: CI Lambda e Terraform
+    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +52,7 @@ jobs:
 
   plan:
     name: Terraform Plan ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
-    if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref != 'refs/heads/main' || github.ref_protected)
+    if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch' && (github.ref != 'refs/heads/main' || github.ref_protected)
     needs: checks
     outputs:
       deployment_config_fingerprint: ${{ steps.deployment_config.outputs.fingerprint }}
@@ -104,7 +106,6 @@ jobs:
           test "$AWS_LAMBDA_FUNCTION_NAME" = "autoflow-cpf-validator-$TF_VAR_environment"
           test "$TF_VAR_terraform_state_bucket" = "$TF_STATE_BUCKET"
           python scripts/validate_lambda_state_keys.py
-          test "$APPROVAL_CONFIGURED" = true
           REVIEWERS=$(gh api "repos/$GITHUB_REPOSITORY/environments/$TF_VAR_environment" --jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length')
           test "$REVIEWERS" -gt 0 || { echo "Plan bloqueado: configure Required reviewers no Environment $TF_VAR_environment." >&2; exit 1; }
       - uses: aws-actions/configure-aws-credentials@v4
@@ -211,7 +212,7 @@ jobs:
 
   apply:
     name: Terraform Apply ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }} (aprovação requerida)
-    if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref != 'refs/heads/main' || github.ref_protected)
+    if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch' && inputs.apply == true && (github.ref != 'refs/heads/main' || github.ref_protected)
     needs: plan
     runs-on: ubuntu-latest
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
