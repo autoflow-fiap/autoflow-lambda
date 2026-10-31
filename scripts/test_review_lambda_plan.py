@@ -12,7 +12,7 @@ class ReviewLambdaPlanTests(unittest.TestCase):
     def test_develop_routes_to_homolog_and_main_routes_to_production(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
         conditions = {
-            "plan": "(github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch'",
+            "plan": "(github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.gate.outputs.auto_cd_enabled == 'true'))",
             "apply": "(github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch' && inputs.apply == true",
         }
         plan, apply = workflow.split("  plan:", 1)[1].split("\n  apply:\n", 1)[0], workflow.split("\n  apply:\n", 1)[1]

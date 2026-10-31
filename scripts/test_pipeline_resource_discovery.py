@@ -116,13 +116,14 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("branches: [develop, main, 'feature/**']", ci)
         self.assertIn("branches: [develop, main]", ci.split("  pull_request:", 1)[1])
-        self.assertNotIn("  push:", workflow.split("permissions:", 1)[0])
+        self.assertIn("  push:\n    branches: [develop, main]", workflow.split("permissions:", 1)[0])
         self.assertNotIn("  pull_request:", workflow.split("permissions:", 1)[0])
         plan = workflow.split("  plan:", 1)[1].split("  apply:", 1)[0]
         apply = workflow.split("\n  apply:\n", 1)[1]
         self.assertIn("github.event_name == 'workflow_dispatch'", plan)
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.apply == true", apply)
-        self.assertNotIn("github.event_name == 'push'", plan + apply)
+        self.assertIn("needs.gate.outputs.auto_cd_enabled == 'true'", plan)
+        self.assertNotIn("github.event_name == 'push'", apply)
         for job in (plan, apply):
             self.assertIn("github.ref != 'refs/heads/main' || github.ref_protected", job)
             self.assertIn("TF_PLAN_ENCRYPTION_KEY", job)
