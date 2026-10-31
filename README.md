@@ -36,8 +36,9 @@ O workflow usa o mesmo root Terraform para os dois ambientes:
 
 - `develop` seleciona o GitHub Environment `homolog` e mantém a função `autoflow-cpf-validator-homolog`.
 - `main` seleciona o Environment `production` e cria/atualiza `autoflow-cpf-validator-production`.
-- Push em uma dessas branches executa Plan e Apply para o ambiente correspondente; ambos usam o Environment da branch, e os Required reviewers configurados nele são gates obrigatórios. O Apply preserva os guards contra Destroy, Replace e mudança de identidade da Lambda.
-- Pull Requests e pushes em `feature/**` executam somente CI estático. `workflow_dispatch` só habilita Plan/Apply quando executado em `develop` ou `main`.
+- O workflow `.github/workflows/ci.yml` executa automaticamente testes Python, auditoria de dependências, validação do pacote e Terraform estático em PRs para `develop`/`main` e pushes para `develop`, `main` e `feature/**`, sem acesso AWS.
+- O workflow `.github/workflows/pipeline.yml` aceita somente `workflow_dispatch` em `develop` ou `main`. O Plan seleciona o Environment correspondente e pode ser executado com `apply=false`; Apply exige `apply=true` e uma aprovação independente dos Required reviewers do Environment. O Apply preserva os guards contra Destroy, Replace e mudança de identidade da Lambda.
+- Pushes e Pull Requests nunca publicam pacotes na AWS nem iniciam Plan ou Apply; branches de feature não podem iniciar o CD.
 
 Configure os Environments `homolog` e `production`, restringindo deployments respectivamente a `develop` e `main`. Em cada um, cadastre suas próprias Variables e Secrets, incluindo `TF_PLAN_ENCRYPTION_KEY`, habilite Required reviewers e defina `TERRAFORM_APPLY_APPROVAL_CONFIGURED=true` somente depois de confirmar a regra. Os nomes necessários e as chaves de State estão em [variables-and-secrets.md](docs/variables-and-secrets.md). Credenciais AWS temporárias, dados PostgreSQL, JWT Secret, chave de criptografia e role Lambda são fornecidos externamente; não use valores de um ambiente no outro.
 
@@ -60,7 +61,7 @@ Para criar localmente o pacote de deploy determinístico, use Docker e Bash (por
 bash build.sh
 ```
 
-O pipeline publica o pacote e executa Terraform somente para `develop`/`homolog` ou `main` protegida/`production`. O Plan é criptografado antes de ser publicado como artifact por um dia; o Apply aprovado confere integridade, run, commit e fingerprint antes de descriptografá-lo. Para uma execução manual, selecione uma dessas branches no workflow; o mesmo Environment, preflight de conta e gates de aprovação continuam obrigatórios. Mudanças em PR e branches feature não recebem credenciais AWS e não executam Plan/Apply.
+O CD publica o pacote e executa Terraform somente em `workflow_dispatch` para `develop`/`homolog` ou `main` protegida/`production`. O Plan é criptografado antes de ser publicado como artifact por um dia; o Apply aprovado confere integridade, run, commit e fingerprint antes de descriptografá-lo. Um Plan concluído com `apply=false` não inicia Apply. Para uma execução manual, selecione uma dessas branches no workflow; o mesmo Environment, preflight de conta e gates de aprovação continuam obrigatórios. Mudanças em PR e branches feature não recebem credenciais AWS e não executam Plan/Apply.
 
 `AWS_EXPECTED_ACCOUNT_ID`, fornecido pelas variables externas do ambiente, é transformado em
 `TF_VAR_aws_allowed_account_ids` e restringe o backend S3 e os dois `terraform_remote_state` (VPC/EKS e RDS). O `init`
