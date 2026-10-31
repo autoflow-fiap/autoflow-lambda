@@ -15,3 +15,8 @@ O caminho automático executa somente o Plan. Apply continua disponível somente
 - São duas Variables não sensíveis no nível do repositório; não exigem Secret novo nem ID de conta. As credenciais AWS, States, criptografia e gates continuam separados nos GitHub Environments `homolog` e `production`.
 
 O gate automático apenas inicia os jobs de Plan após a CI aprovada. As proteções próprias do Environment continuam aplicáveis. Nenhuma implantação ou operação AWS é inferida como realizada por esta configuração local.
+
+Em consulta somente-leitura ao GitHub em 31/10/2026, `AUTO_CD_ENABLED` estava ausente e
+`TERRAFORM_APPLY_APPROVAL_CONFIGURED=false` nos dois Environments. A [Lambda CI](https://github.com/autoflow-fiap/autoflow-lambda/actions/runs/41160356788)
+passou; a [Lambda Pipeline](https://github.com/autoflow-fiap/autoflow-lambda/actions/runs/41160356791) falhou no gate antes
+do Plan. Rulesets com PR/checks, Required reviewers e branch policies estavam ativos. Não há evidência de Apply da Lambda nesta revisão.
