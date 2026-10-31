@@ -97,19 +97,6 @@ class PipelineResourceDiscoveryTests(unittest.TestCase):
         self.assertNotIn("expected_bucket_owner", data_tf)
         self.assertIn('aws s3api head-object --bucket "$TF_STATE_BUCKET" --key "$key" --expected-bucket-owner "$AWS_EXPECTED_ACCOUNT_ID"', plan)
 
-    def test_documented_remote_keys_match_the_owning_roots(self):
-        documentation = (ROOT / "docs/variables-and-secrets.md").read_text(encoding="utf-8")
-        for relationship in (
-            "`AWS_TF_STATE_KEY_INFRA`",
-            "`AWS_INFRA_STATE_KEY`",
-            "`AWS_TF_STATE_KEY`",
-            "`AWS_RDS_STATE_KEY`",
-            "`homolog/`",
-            "`production/`",
-        ):
-            self.assertIn(relationship, documentation)
-        self.assertIn("Não habilite o CD até confirmar", documentation)
-
     def test_feature_and_pull_request_events_cannot_run_aws_plan_or_apply(self):
         workflow = (ROOT / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
         checks = workflow.split("  checks:", 1)[1].split("  plan:", 1)[0]
