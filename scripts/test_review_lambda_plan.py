@@ -22,7 +22,8 @@ class ReviewLambdaPlanTests(unittest.TestCase):
             self.assertIn("environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", job)
             self.assertIn("autoflow-cpf-validator-${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", job)
             self.assertIn("TF_VAR_environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", job)
-            self.assertIn("required_reviewers", job)
+            self.assertNotIn("gh api", job)
+            self.assertNotIn("/environments/", job)
             self.assertIn("TERRAFORM_APPLY_APPROVAL_CONFIGURED", job)
         self.assertNotIn("vars.AWS_LAMBDA_FUNCTION_NAME", workflow)
 
@@ -54,8 +55,9 @@ class ReviewLambdaPlanTests(unittest.TestCase):
     def test_apply_requires_an_approved_environment_and_is_limited_to_deploy_branches(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
         apply = workflow.split("\n  apply:\n", 1)[1]
-        self.assertIn("required_reviewers", apply)
         self.assertIn("TERRAFORM_APPLY_APPROVAL_CONFIGURED", apply)
+        self.assertIn('test "$TERRAFORM_APPLY_APPROVAL_CONFIGURED" = true', apply)
+        self.assertNotIn("gh api", apply)
         self.assertIn("environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}", apply)
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.apply == true", apply)
         self.assertNotIn("github.event_name == 'push'", apply)
