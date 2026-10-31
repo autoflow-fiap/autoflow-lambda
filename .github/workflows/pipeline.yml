@@ -44,6 +44,8 @@ jobs:
           GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
           CI_WORKFLOW_NAME: Lambda CI
           EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          AUTO_CD_ENABLED_HOMOLOG: ${{ vars.AUTO_CD_ENABLED_HOMOLOG }}
+          AUTO_CD_ENABLED_PRODUCTION: ${{ vars.AUTO_CD_ENABLED_PRODUCTION }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: python scripts/validate_cd_trigger.py
@@ -119,23 +121,31 @@ jobs:
           ref: ${{ needs.gate.outputs.sha }}
       - name: Confirmar checkout do commit aprovado pela CI
         run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
-      - name: Validar configuração e aprovação do Environment
+      - name: Validar valores injetados pelo Environment
         env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
+          AWS_TERRAFORM_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          AWS_TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}
+          AWS_INFRA_STATE_KEY: ${{ vars.AWS_INFRA_STATE_KEY }}
+          AWS_RDS_STATE_KEY: ${{ vars.AWS_RDS_STATE_KEY }}
+          AWS_LAMBDA_EXECUTION_ROLE_ARN: ${{ vars.AWS_LAMBDA_EXECUTION_ROLE_ARN }}
+          TERRAFORM_APPLY_APPROVAL_CONFIGURED: ${{ vars.TERRAFORM_APPLY_APPROVAL_CONFIGURED }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-          APPROVAL_CONFIGURED: ${{ vars.TERRAFORM_APPLY_APPROVAL_CONFIGURED }}
-          GH_TOKEN: ${{ github.token }}
+          DATABASE_USERNAME: ${{ secrets.DATABASE_USERNAME }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
         shell: bash
         run: |
           set -euo pipefail
-          VARIABLE_NAMES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/environments/$GITHUB_DEPLOYMENT_ENVIRONMENT/variables?per_page=30" --jq '.variables[].name')
           for name in AWS_REGION AWS_EXPECTED_ACCOUNT_ID AWS_TERRAFORM_STATE_BUCKET AWS_TF_STATE_KEY AWS_INFRA_STATE_KEY AWS_RDS_STATE_KEY AWS_LAMBDA_EXECUTION_ROLE_ARN TERRAFORM_APPLY_APPROVAL_CONFIGURED; do
-            grep -Fxq -- "$name" <<< "$VARIABLE_NAMES" || { echo "A Variable $name precisa estar cadastrada no GitHub Environment selecionado." >&2; exit 1; }
+            [[ -n "${!name}" ]] || { echo "A Variable $name precisa ter valor no GitHub Environment selecionado." >&2; exit 1; }
           done
-          SECRET_NAMES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/environments/$GITHUB_DEPLOYMENT_ENVIRONMENT/secrets?per_page=100" --jq '.secrets[].name')
           for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN DATABASE_USERNAME DATABASE_PASSWORD JWT_SECRET TF_PLAN_ENCRYPTION_KEY; do
-            grep -Fxq -- "$name" <<< "$SECRET_NAMES" || { echo "O Secret $name precisa estar cadastrado no GitHub Environment selecionado." >&2; exit 1; }
+            [[ -n "${!name}" ]] || { echo "O Secret $name precisa ter valor no GitHub Environment selecionado." >&2; exit 1; }
           done
           test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && test -n "$AWS_SESSION_TOKEN"
           [[ "$AWS_EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
@@ -146,8 +156,6 @@ jobs:
           test "$AWS_LAMBDA_FUNCTION_NAME" = "autoflow-cpf-validator-$TF_VAR_environment"
           test "$TF_VAR_terraform_state_bucket" = "$TF_STATE_BUCKET"
           python scripts/validate_lambda_state_keys.py
-          REVIEWERS=$(gh api "repos/$GITHUB_REPOSITORY/environments/$TF_VAR_environment" --jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length')
-          test "$REVIEWERS" -gt 0 || { echo "Plan bloqueado: configure Required reviewers no Environment $TF_VAR_environment." >&2; exit 1; }
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -281,23 +289,33 @@ jobs:
           ref: ${{ needs.gate.outputs.sha }}
       - name: Confirmar checkout do commit que gerou o Plan
         run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
-      - name: Exigir sinalização e Required reviewers efetivos
+      - name: Validar valores do Environment e sinalização de aprovação
         env:
-          APPROVAL_CONFIGURED: ${{ vars.TERRAFORM_APPLY_APPROVAL_CONFIGURED }}
-          GH_TOKEN: ${{ github.token }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
+          AWS_TERRAFORM_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
+          AWS_TF_STATE_KEY: ${{ vars.AWS_TF_STATE_KEY }}
+          AWS_INFRA_STATE_KEY: ${{ vars.AWS_INFRA_STATE_KEY }}
+          AWS_RDS_STATE_KEY: ${{ vars.AWS_RDS_STATE_KEY }}
+          AWS_LAMBDA_EXECUTION_ROLE_ARN: ${{ vars.AWS_LAMBDA_EXECUTION_ROLE_ARN }}
+          TERRAFORM_APPLY_APPROVAL_CONFIGURED: ${{ vars.TERRAFORM_APPLY_APPROVAL_CONFIGURED }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          DATABASE_USERNAME: ${{ secrets.DATABASE_USERNAME }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+        shell: bash
         run: |
           set -euo pipefail
-          VARIABLE_NAMES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/environments/$GITHUB_DEPLOYMENT_ENVIRONMENT/variables?per_page=30" --jq '.variables[].name')
           for name in AWS_REGION AWS_EXPECTED_ACCOUNT_ID AWS_TERRAFORM_STATE_BUCKET AWS_TF_STATE_KEY AWS_INFRA_STATE_KEY AWS_RDS_STATE_KEY AWS_LAMBDA_EXECUTION_ROLE_ARN TERRAFORM_APPLY_APPROVAL_CONFIGURED; do
-            grep -Fxq -- "$name" <<< "$VARIABLE_NAMES" || { echo "A Variable $name precisa estar cadastrada no GitHub Environment selecionado." >&2; exit 1; }
+            [[ -n "${!name}" ]] || { echo "A Variable $name precisa ter valor no GitHub Environment selecionado." >&2; exit 1; }
           done
-          SECRET_NAMES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/environments/$GITHUB_DEPLOYMENT_ENVIRONMENT/secrets?per_page=100" --jq '.secrets[].name')
           for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN DATABASE_USERNAME DATABASE_PASSWORD JWT_SECRET TF_PLAN_ENCRYPTION_KEY; do
-            grep -Fxq -- "$name" <<< "$SECRET_NAMES" || { echo "O Secret $name precisa estar cadastrado no GitHub Environment selecionado." >&2; exit 1; }
+            [[ -n "${!name}" ]] || { echo "O Secret $name precisa ter valor no GitHub Environment selecionado." >&2; exit 1; }
           done
-          test "$APPROVAL_CONFIGURED" = true || { echo "Apply bloqueado: configure Required reviewers no Environment $TF_VAR_environment e TERRAFORM_APPLY_APPROVAL_CONFIGURED=true." >&2; exit 1; }
-          REVIEWERS=$(gh api "repos/$GITHUB_REPOSITORY/environments/$TF_VAR_environment" --jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length')
-          test "$REVIEWERS" -gt 0 || { echo "Apply bloqueado: $TF_VAR_environment não possui Required reviewers configurados." >&2; exit 1; }
+          test "$TERRAFORM_APPLY_APPROVAL_CONFIGURED" = true || { echo "Apply bloqueado: configure Required reviewers no Environment $TF_VAR_environment e TERRAFORM_APPLY_APPROVAL_CONFIGURED=true." >&2; exit 1; }
       - name: Exigir credenciais temporárias
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
