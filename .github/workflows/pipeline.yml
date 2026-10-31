@@ -8,6 +8,8 @@ on:
         type: boolean
         required: true
         default: false
+  push:
+    branches: [develop, main]
 
 permissions:
   contents: read
@@ -18,12 +20,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    name: Validar CI aprovada e commit de origem
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') &&
+       (github.ref != 'refs/heads/main' || github.ref_protected)) ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') &&
+       (github.ref != 'refs/heads/main' || github.ref_protected))
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.validate.outputs.branch }}
+      sha: ${{ steps.validate.outputs.sha }}
+      environment: ${{ steps.validate.outputs.environment }}
+      branch_protected: ${{ steps.validate.outputs.branch_protected }}
+      auto_cd_enabled: ${{ steps.validate.outputs.auto_cd_enabled }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validar origem da CI e proteger main
+        id: validate
+        env:
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          CI_WORKFLOW_NAME: Lambda CI
+          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: python scripts/validate_cd_trigger.py
+
   checks:
     name: CI Lambda e Terraform
-    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
+    if: needs.gate.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.gate.outputs.auto_cd_enabled == 'true')
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+      - name: Confirmar checkout do commit validado
+        env:
+          DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -52,14 +89,15 @@ jobs:
 
   plan:
     name: Terraform Plan ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
-    if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch' && (github.ref != 'refs/heads/main' || github.ref_protected)
-    needs: checks
+    if: needs.gate.result == 'success' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.ref != 'refs/heads/main' || github.ref_protected) && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.gate.outputs.auto_cd_enabled == 'true'))
+    needs: [gate, checks]
     outputs:
       deployment_config_fingerprint: ${{ steps.deployment_config.outputs.fingerprint }}
     runs-on: ubuntu-latest
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
     env:
       GITHUB_DEPLOYMENT_ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+      DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
       TF_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
@@ -78,7 +116,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.gate.outputs.sha }}
+      - name: Confirmar checkout do commit aprovado pela CI
+        run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
       - name: Validar configuração e aprovação do Environment
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -186,7 +226,7 @@ jobs:
           test -n "$TF_PLAN_ENCRYPTION_KEY"
           python -c 'import os; assert len(os.environ["TF_PLAN_ENCRYPTION_KEY"]) >= 32, "TF_PLAN_ENCRYPTION_KEY precisa ter ao menos 32 caracteres"'
           printf '%s\n' "$TF_PLAN_ENCRYPTION_KEY" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 --output lambda.tfplan.gpg lambda.tfplan
-          python -c 'import json,os; json.dump({"run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],"commit":os.environ["GITHUB_SHA"]}, open("lambda-plan-metadata.json", "w", encoding="utf-8"), sort_keys=True)'
+          python -c 'import json,os; json.dump({"run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],"commit":os.environ["DEPLOY_SHA"]}, open("lambda-plan-metadata.json", "w", encoding="utf-8"), sort_keys=True)'
           sha256sum lambda.tfplan.gpg lambda-plan-metadata.json lambda-deployment-config.sha256 lambda-package.json > lambda.tfplan.sha256
           rm -f lambda.tfplan
       - name: Calcular SHA-256 do pacote Lambda
@@ -212,13 +252,14 @@ jobs:
 
   apply:
     name: Terraform Apply ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }} (aprovação requerida)
-    if: (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch' && inputs.apply == true && (github.ref != 'refs/heads/main' || github.ref_protected)
-    needs: plan
+    if: needs.gate.result == 'success' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch' && inputs.apply == true && (github.ref != 'refs/heads/main' || github.ref_protected)
+    needs: [gate, plan]
     runs-on: ubuntu-latest
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
     env:
       PLAN_DEPLOYMENT_CONFIG_FINGERPRINT: ${{ needs.plan.outputs.deployment_config_fingerprint }}
       GITHUB_DEPLOYMENT_ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+      DEPLOY_SHA: ${{ needs.gate.outputs.sha }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_EXPECTED_ACCOUNT_ID: ${{ vars.AWS_EXPECTED_ACCOUNT_ID }}
       TF_STATE_BUCKET: ${{ vars.AWS_TERRAFORM_STATE_BUCKET }}
@@ -237,7 +278,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.gate.outputs.sha }}
+      - name: Confirmar checkout do commit que gerou o Plan
+        run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
       - name: Exigir sinalização e Required reviewers efetivos
         env:
           APPROVAL_CONFIGURED: ${{ vars.TERRAFORM_APPLY_APPROVAL_CONFIGURED }}
@@ -314,7 +357,7 @@ jobs:
         run: |
           set -euo pipefail
           sha256sum --check lambda.tfplan.sha256
-          python -c 'import json,os,sys; m=json.load(open("lambda-plan-metadata.json", encoding="utf-8")); sys.exit(not (m == {"run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],"commit":os.environ["GITHUB_SHA"]}))'
+          python -c 'import json,os,sys; m=json.load(open("lambda-plan-metadata.json", encoding="utf-8")); sys.exit(not (m == {"run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],"commit":os.environ["DEPLOY_SHA"]}))'
       - name: Revalidar fingerprint do Environment e dos States
         working-directory: infra
         run: |
