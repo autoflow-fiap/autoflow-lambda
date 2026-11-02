@@ -29,6 +29,12 @@ e na [coleção Postman de autenticação](https://github.com/autoflow-fiap/auto
 O README de [integração com API Gateway](docs/api-gateway.md) e o [catálogo de Variables e Secrets](docs/variables-and-secrets.md)
 detalham a configuração.
 
+## Decisão e especificação de autenticação
+
+A [ADR-001](docs/adr/ADR-001-autenticacao-serverless-jwt.md) registra as fronteiras de autenticação serverless e emissão
+de JWT; a [RFC-001](docs/rfc/RFC-001-autenticacao-serverless-jwt.md) detalha o fluxo, alternativas, riscos e critérios de
+validação. Esses documentos descrevem código e configuração versionados, não comprovam implantação ou estado atual da AWS.
+
 ## Validar e empacotar localmente
 
 Requer Python 3.12, Terraform 1.16.5 e Bash (Git Bash ou WSL para o build do pacote):

@@ -4,6 +4,8 @@ O repositório `autoflow-infra` configura Amazon API Gateway HTTP API v2 para en
 
 O Terraform deste repositório provisiona a função Python 3.12 em subnets privadas, com acesso ao RDS PostgreSQL. Após autenticação, o backend Spring Boot valida o JWT nas rotas protegidas. O contrato de API e exemplos de requisição permanecem no [guia OpenAPI](https://github.com/autoflow-fiap/autoflow/blob/develop/docs/openapi/README.md) e na [coleção Postman](https://github.com/autoflow-fiap/autoflow/blob/develop/backend/postman/autoflow-serverless-auth.postman_collection.json).
 
+O root API Gateway pertence a `autoflow-infra`; ele não configura authorizer JWT. A Lambda de login autentica credenciais e emite JWT HS256; o backend valida assinatura/expiração e carrega o perfil/estado atual para autorização. A decisão e os limites desse contrato estão em [ADR-001](adr/ADR-001-autenticacao-serverless-jwt.md) e [RFC-001](rfc/RFC-001-autenticacao-serverless-jwt.md).
+
 ## Provisionamento após reset
 
 Após reset do AWS Academy Learner Lab, reexecute as pipelines CI/CD dos repositórios na ordem de dependências para provisionar novamente VPC/EKS, RDS, Lambda, API Gateway e aplicação.
