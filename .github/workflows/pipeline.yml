@@ -90,7 +90,7 @@ jobs:
         run: terraform -chdir=infra validate
 
   plan:
-    name: Terraform Plan ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }}
+    name: Terraform Plan
     if: needs.gate.result == 'success' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && (github.ref != 'refs/heads/main' || github.ref_protected) && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.gate.outputs.auto_cd_enabled == 'true'))
     needs: [gate, checks]
     outputs:
@@ -259,7 +259,7 @@ jobs:
         run: rm -f infra/lambda.tfplan infra/lambda.tfplan.gpg infra/lambda.tfplan.sha256 infra/lambda-plan-metadata.json infra/lambda-deployment-config.sha256
 
   apply:
-    name: Terraform Apply ${{ github.ref == 'refs/heads/main' && 'production' || 'homolog' }} (aprovação requerida)
+    name: Terraform Apply (aprovação requerida)
     if: needs.gate.result == 'success' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') && github.event_name == 'workflow_dispatch' && inputs.apply == true && (github.ref != 'refs/heads/main' || github.ref_protected)
     needs: [gate, plan]
     runs-on: ubuntu-latest
