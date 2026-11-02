@@ -13,11 +13,12 @@ flowchart LR
   Browser[Navegador / Angular] -->|POST /auth/login| Gateway[API Gateway HTTP API v2]
   Gateway -->|AWS_PROXY — payload 2.0| Lambda[Lambda Python 3.12]
   Lambda -->|consulta usuário, senha e status| DB[(RDS PostgreSQL)]
-  Lambda -->|JWT HS256| Browser
+  Lambda -->|HTTP 200 + JWT HS256 ou erro sem token| Gateway
+  Gateway -->|Resposta JSON| Browser
   Browser -->|rotas de negócio + Bearer JWT| Gateway
   Gateway -->|VPC Link| ALB[ALB interno]
   ALB --> Backend[Spring Boot no EKS]
-  Backend -->|valida JWT e acessa dados| DB
+  Backend -->|valida JWT e recarrega perfil/estado| DB
 ```
 
 A função normaliza e valida CPF/CNPJ, verifica a senha com BCrypt e consulta o usuário no PostgreSQL. Para o perfil
