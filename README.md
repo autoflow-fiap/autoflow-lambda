@@ -13,11 +13,12 @@ flowchart LR
   Browser[Navegador / Angular] -->|POST /auth/login| Gateway[API Gateway HTTP API v2]
   Gateway -->|AWS_PROXY — payload 2.0| Lambda[Lambda Python 3.12]
   Lambda -->|consulta usuário, senha e status| DB[(RDS PostgreSQL)]
-  Lambda -->|JWT HS256| Browser
+  Lambda -->|HTTP 200 + JWT HS256 ou erro sem token| Gateway
+  Gateway -->|Resposta JSON| Browser
   Browser -->|rotas de negócio + Bearer JWT| Gateway
   Gateway -->|VPC Link| ALB[ALB interno]
   ALB --> Backend[Spring Boot no EKS]
-  Backend -->|valida JWT e acessa dados| DB
+  Backend -->|valida JWT e recarrega perfil/estado| DB
 ```
 
 A função normaliza e valida CPF/CNPJ, verifica a senha com BCrypt e consulta o usuário no PostgreSQL. Para o perfil
@@ -28,6 +29,12 @@ O contrato e exemplos estão no [guia OpenAPI](https://github.com/autoflow-fiap/
 e na [coleção Postman de autenticação](https://github.com/autoflow-fiap/autoflow/blob/develop/backend/postman/autoflow-serverless-auth.postman_collection.json).
 O README de [integração com API Gateway](docs/api-gateway.md) e o [catálogo de Variables e Secrets](docs/variables-and-secrets.md)
 detalham a configuração.
+
+## Decisão e especificação de autenticação
+
+A [ADR-001](docs/adr/ADR-001-autenticacao-serverless-jwt.md) registra as fronteiras de autenticação serverless e emissão
+de JWT; a [RFC-001](docs/rfc/RFC-001-autenticacao-serverless-jwt.md) detalha o fluxo, alternativas, riscos e critérios de
+validação. Esses documentos descrevem código e configuração versionados, não comprovam implantação ou estado atual da AWS.
 
 ## Validar e empacotar localmente
 
